@@ -1,77 +1,77 @@
 # LUXAI2021-2026gassyuku
 
-本仓库是小组项目使用的 Lux AI Season 1 / Lux AI 2021 实验仓库。当前路线不是从零重写环境，而是在第一名开源方案的训练框架上，完成本地环境搭建、GPU 训练、agent 打包、replay 生成和可视化验证。
+This repository is the Lux AI Season 1 / Lux AI 2021 experiment workspace for our group project. The current work does not rebuild the environment from scratch. Instead, it builds on the open-source first-place solution, then adds a local workflow for environment setup, GPU training, agent packaging, replay generation, and visualization.
 
-## 项目来源
+## Project Origin
 
-本项目基于 Isaiah Pressman 的 Lux AI 2021 第一名开源仓库：
+This project is based on Isaiah Pressman's first-place Lux AI 2021 repository:
 
-- 原始仓库: https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021
+- Original repository: https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021
 - Kaggle 1st place write-up: https://www.kaggle.com/c/lux-ai-2021/discussion/294993
 
-原仓库提供了 TorchBeast/IMPALA 风格的自博弈强化学习框架、Lux AI 环境封装、神经网络结构、第一名历史 agent 和比赛复盘资料。本仓库在此基础上整理出适合小组继续实验的本地路线，并保留原许可证文件。
+The original repository provides a TorchBeast/IMPALA-style self-play reinforcement learning framework, Lux AI environment wrappers, neural network models, historical first-place agents, and replay analysis resources. This repository reorganizes that foundation for our group's local experiments while preserving attribution and the original license file.
 
-## 当前目标
+## Current Goal
 
-当前阶段的目标是让 agent 在 Lux AI 2021 中稳定生存更久，并逐步学习第一名方案中的城市扩张、采矿、研究和自博弈策略。现阶段优先级如下：
+The current goal is to make our agent survive longer in Lux AI 2021 and gradually learn the balance between city expansion, mining, research, and self-play strategy from the first-place solution. Our priorities are:
 
-1. 跑通训练、打包、replay、可视化的完整链路。
-2. 使用第一名 agent 作为 teacher，进行模仿学习和自博弈微调。
-3. 先在 16x16 地图上训练，后续扩展到 24x24、32x32 和随机地图尺寸。
-4. 优先提升 360 turn 生存能力，再进一步优化胜率和得分。
+1. Keep the full training, packaging, replay, and visualization pipeline reproducible.
+2. Use the first-place agent as a teacher for imitation learning and self-play finetuning.
+3. Start from 16x16 maps, then extend to 24x24, 32x32, and mixed map sizes.
+4. Prioritize surviving to 360 turns before optimizing win rate and final score.
 
-## 当前已验证路线
+## Verified Current Route
 
-已完成一次 16x16 teacher finetune 小规模训练：
+We have completed one small-scale 16x16 teacher-finetuning run:
 
-- 训练地图: 16x16
-- 训练步数: 100000
-- checkpoint 间隔: 10000 learner steps
-- 当前最终权重: `100000_weights.pt`
-- 打包 agent: `local_agents/teacher_finetune_16x16_100000.zip`
-- 验证 replay: `replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json`
+- Map size: 16x16
+- Training steps: 100000
+- Checkpoint interval: every 10000 learner steps
+- Final weights: `100000_weights.pt`
+- Packaged agent: `local_agents/teacher_finetune_16x16_100000.zip`
+- Validation replay: `replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json`
 
-验证结果中，当前 agent 在 16x16 replay 中击败 public/reference opponent，并成功扩张到多城市、多 worker、研究完成 uranium 的状态。这个结果作为后续研究的起点。
+In the validation replay, the current agent defeated a public/reference opponent on a 16x16 map and expanded into multiple cities, many workers, and full uranium research. This result is the baseline for future research.
 
-## 目录结构
+## Repository Structure
 
 ```text
 conf/
-  conv_teacher_finetune_16x16.yaml        当前主训练配置
-  conv_teacher_finetune_24x24.yaml        后续 24x24 地图配置
-  conv_teacher_finetune_32x32.yaml        后续 32x32 地图配置
-  conv_teacher_finetune_random_sizes.yaml 后续随机地图尺寸配置
+  conv_teacher_finetune_16x16.yaml        Main current training config
+  conv_teacher_finetune_24x24.yaml        Future 24x24 map config
+  conv_teacher_finetune_32x32.yaml        Future 32x32 map config
+  conv_teacher_finetune_random_sizes.yaml Future mixed-size map config
 
 lux_ai/
-  lux/                                    Lux AI 2021 游戏对象和规则封装
-  lux_gym/                                Gym 环境、动作空间、观测空间、奖励空间
-  nns/                                    神经网络模型
-  rl_agent/                               agent 推理代码
-  torchbeast/                             IMPALA/TorchBeast 训练循环
+  lux/                                    Lux AI 2021 game objects and rules
+  lux_gym/                                Gym environment, action spaces, observation spaces, rewards
+  nns/                                    Neural network models
+  rl_agent/                               Agent inference code
+  torchbeast/                             IMPALA/TorchBeast training loop
 
 internal_testing/
-  hall_of_fame/                           原项目保留的强 agent 和 teacher 参考
-  public_agents/                          public/reference agents
+  hall_of_fame/                           Strong agents and teacher references from the base project
+  public_agents/                          Public/reference agents
 
 local_agents/
-  teacher_finetune_16x16_100000/          当前已打包 agent 源目录
-  teacher_finetune_16x16_100000.zip       当前可提交/可上传 agent 包
+  teacher_finetune_16x16_100000/          Current packaged agent source directory
+  teacher_finetune_16x16_100000.zip       Current uploadable/submittable agent package
 
 replays/
   teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
 
 references/
-  kaggle_lux_ai_2021_top_results.md       Kaggle top solution 参考
-  replay_validation_1st_place.md          第一名 agent 复盘验证
-  visualization_and_training_guide.md     训练和可视化链路
-  gpu_32x32_training.md                   GPU 和大地图训练笔记
+  kaggle_lux_ai_2021_top_results.md       Kaggle top-solution references
+  replay_validation_1st_place.md          Replay validation notes
+  visualization_and_training_guide.md     Training and visualization workflow
+  gpu_32x32_training.md                   GPU and large-map training notes
 ```
 
-`outputs/`、`.venv/`、`node_modules/` 是本地训练输出和依赖目录，已经加入 `.gitignore`，不会作为仓库内容推送。
+`outputs/`, `.venv/`, and `node_modules/` are local training outputs and dependency directories. They are ignored by `.gitignore` and are not pushed as repository content.
 
-## 环境
+## Environment
 
-推荐在 Windows PowerShell 中使用本地虚拟环境。
+On Windows, the recommended workflow is to use the local virtual environment from PowerShell:
 
 ```powershell
 .\.venv\Scripts\activate
@@ -79,25 +79,25 @@ pip install -r requirements.txt
 pnpm install
 ```
 
-Lux AI 官方 CLI 依赖 Node.js。当前仓库使用 `package.json` 和 `pnpm-lock.yaml` 固定 replay/可视化相关 JS 依赖。
+The official Lux AI CLI depends on Node.js. This repository uses `package.json` and `pnpm-lock.yaml` to pin the replay/visualization-related JavaScript dependencies.
 
-如果使用 Docker，可以参考：
+Docker can also be used:
 
 ```powershell
 docker compose build
 docker compose run --rm luxai powershell
 ```
 
-## 训练
+## Training
 
-当前主配置：
+Current main config:
 
 ```powershell
 $env:WANDB_MODE="offline"
 .\.venv\Scripts\python.exe run_monobeast.py --config-name conv_teacher_finetune_16x16
 ```
 
-训练入口链路：
+Training entry path:
 
 ```text
 run_monobeast.py
@@ -106,55 +106,61 @@ run_monobeast.py
   -> official lux-ai-2021 engine
 ```
 
-本仓库对原训练入口做了几处本地化调整：
+Local changes kept in this repository:
 
-- 支持通过 Hydra 配置传入 `env_configuration.width` 和 `env_configuration.height`。
-- checkpoint 频率按 learner step 保存，而不是按分钟保存。
-- 简化训练日志，减少 Gym/Hydra/CUDA 的噪声输出。
-- 默认不从当前目录的 `config.yaml` 自动恢复，避免误读旧实验配置。
+- Hydra configs can pass `env_configuration.width` and `env_configuration.height`.
+- Checkpoints are saved by learner-step interval instead of elapsed minutes.
+- Training logs are quieter by suppressing Gym/Hydra/CUDA warning noise.
+- `run_monobeast.py` does not automatically resume from a local `config.yaml` unless explicitly requested.
 
-## Agent 打包
+## Agent Packaging
 
-当前可用 agent 位于：
+The current usable agent package is:
 
 ```text
 local_agents/teacher_finetune_16x16_100000.zip
 ```
 
-该 zip 是从 `local_agents/teacher_finetune_16x16_100000/` 重新打包得到，已经清理 `__pycache__`。其中核心权重为：
+The zip was rebuilt from:
+
+```text
+local_agents/teacher_finetune_16x16_100000/
+```
+
+`__pycache__` files were removed before packaging. The main model weights are:
 
 ```text
 local_agents/teacher_finetune_16x16_100000/lux_ai/rl_agent/100000_weights.pt
 ```
 
-## Replay 和可视化
+## Replay and Visualization
 
-当前 replay：
+Current replay:
 
 ```text
 replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
 ```
 
-可上传到官方 Lux AI 2021 visualizer：
+It can be uploaded to the official Lux AI 2021 visualizer:
 
 ```text
 https://2021vis.lux-ai.org/
 ```
 
-也可以使用官方本地 visualizer 项目：
+The official local visualizer project is:
 
 ```text
 https://github.com/Lux-AI-Challenge/LuxViewer2021
 ```
 
-更多命令和说明见 `references/visualization_and_training_guide.md`。
+More commands and details are in `references/visualization_and_training_guide.md`.
 
-## 后续计划
+## Next Steps
 
-- 继续参考第一名及其他 top solution 的策略，改进城市扩张、研究节奏和燃料管理。
-- 在 16x16 上稳定训练后，迁移到 24x24 和 32x32。
-- 引入更系统的评估脚本，对不同 checkpoint、地图尺寸、seed 和 opponent 做 replay 评估。
-- 在生存到 360 turn 更稳定后，再优化胜率、城市数量和最终得分。
+- Continue studying the first-place and other top solutions to improve city expansion, research timing, and fuel management.
+- Stabilize behavior on 16x16 before moving to 24x24 and 32x32.
+- Add a more systematic evaluation script across checkpoints, map sizes, seeds, and opponents.
+- After survival to 360 turns becomes more stable, optimize win rate, city count, and final score.
 
 ## Attribution
 

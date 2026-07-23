@@ -1,59 +1,59 @@
 # Visualization and Training Guide
 
-本文件说明当前仓库的训练、打包、replay 和可视化链路。项目基于 `IsaiahPressman/Kaggle_Lux_AI_2021`，但当前文档以本地小组实验路线为准。
+This file describes the current training, packaging, replay, and visualization workflow. The project is based on `IsaiahPressman/Kaggle_Lux_AI_2021`, but this guide focuses on our local group workflow.
 
-## 官方可视化工具
+## Official Visualizer
 
-Lux AI 2021 官方 visualizer：
+Lux AI 2021 official visualizer:
 
 ```text
 https://2021vis.lux-ai.org/
 ```
 
-使用方式：
+Usage:
 
-1. 打开网页。
-2. 上传 replay JSON。
-3. 选择当前 replay：
+1. Open the visualizer page.
+2. Upload a replay JSON file.
+3. Select the current replay:
 
 ```text
 replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
 ```
 
-4. 使用时间轴、缩放、统计信息和 debug annotation 检查 agent 行为。
+4. Use the timeline, zoom, statistics, and debug annotations to inspect agent behavior.
 
-## 本地 Visualizer
+## Local Visualizer
 
-官方本地 visualizer 项目：
+Official local visualizer project:
 
 ```text
 https://github.com/Lux-AI-Challenge/LuxViewer2021
 ```
 
-基本流程：
+Basic workflow:
 
 ```powershell
 npm i -g serve
 serve dist
 ```
 
-然后打开：
+Then open:
 
 ```text
 http://localhost:5000
 ```
 
-如果使用当前仓库的 Node 依赖，先运行：
+If using this repository's Node dependencies, install them first:
 
 ```powershell
 pnpm install
 ```
 
-## 生成 Replay
+## Generating Replays
 
-Lux AI 2021 CLI 来自 npm 包 `@lux-ai/2021-challenge`，当前仓库通过 `package.json` 和 `pnpm-lock.yaml` 管理。
+The Lux AI 2021 CLI comes from the npm package `@lux-ai/2021-challenge`. This repository manages it through `package.json` and `pnpm-lock.yaml`.
 
-示例命令：
+Example command:
 
 ```powershell
 .\node_modules\.bin\lux-ai-2021.CMD `
@@ -71,17 +71,17 @@ Lux AI 2021 CLI 来自 npm 包 `@lux-ai/2021-challenge`，当前仓库通过 `pa
   --out replays\teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
 ```
 
-`--statefulReplay=true` 很重要，它会保存更完整的地图状态，方便 visualizer 检查资源、单位、城市和 fuel 变化。
+`--statefulReplay=true` is important because it stores richer map state, making it easier to inspect resources, units, cities, and fuel changes in the visualizer.
 
-## 训练入口
+## Training Entry Point
 
-训练主入口：
+Main training entry:
 
 ```text
 run_monobeast.py
 ```
 
-内部链路：
+Internal path:
 
 ```text
 run_monobeast.py
@@ -91,22 +91,22 @@ run_monobeast.py
   -> official lux-ai-2021 engine
 ```
 
-当前主配置：
+Current main config:
 
 ```text
 conf/conv_teacher_finetune_16x16.yaml
 ```
 
-运行示例：
+Run example:
 
 ```powershell
 $env:WANDB_MODE="offline"
 .\.venv\Scripts\python.exe run_monobeast.py --config-name conv_teacher_finetune_16x16
 ```
 
-## 当前训练思路
+## Current Training Idea
 
-当前路线是：
+Current route:
 
 ```text
 1st place teacher/reference
@@ -118,29 +118,29 @@ $env:WANDB_MODE="offline"
   -> visualizer inspection
 ```
 
-训练优先目标：
+Training priorities:
 
-- 不只追求早期得分，而是让单位和城市活得更久。
-- 前期稳定采 wood，保证第一夜和第二夜燃料。
-- 在 city tile 数量允许时研究 coal 和 uranium。
-- 逐步扩张城市，但不要让 fuel upkeep 失控。
-- 观察 worker 是否分散、是否拥堵、是否能把资源送回城市。
+- Do not optimize only for early score. First make units and cities survive longer.
+- Stabilize early wood collection for the first and second nights.
+- Research coal and uranium when city tile count allows it.
+- Expand cities gradually without letting fuel upkeep grow out of control.
+- Inspect whether workers spread out, avoid congestion, and return resources to cities.
 
-## 地图尺寸策略
+## Map Size Strategy
 
-Lux AI 2021 合法地图尺寸包括：
+Legal Lux AI 2021 map sizes include:
 
 ```text
 12x12, 16x16, 24x24, 32x32
 ```
 
-当前选择 16x16 作为起点，原因是：
+We currently start from 16x16 because:
 
-- 比 12x12 有更多资源和扩张空间。
-- 比 24x24/32x32 训练更快。
-- 更适合先验证模仿学习和自博弈微调是否有效。
+- It has more resources and expansion space than 12x12.
+- It is faster to train than 24x24 or 32x32.
+- It is a good middle ground for validating imitation learning and self-play finetuning.
 
-后续可以使用：
+Future configs:
 
 ```text
 conf/conv_teacher_finetune_24x24.yaml
@@ -148,25 +148,25 @@ conf/conv_teacher_finetune_32x32.yaml
 conf/conv_teacher_finetune_random_sizes.yaml
 ```
 
-逐步测试地图尺寸变化对策略的影响。
+These should be used to test how map size changes the learned strategy.
 
-## 输出和清理
+## Outputs and Cleanup
 
-训练输出位于：
+Training outputs are written to:
 
 ```text
 outputs/
 ```
 
-该目录已被 `.gitignore` 忽略。当前只在本地保留最终有用 checkpoint 和日志，不把大量中间训练记录推送到 GitHub。
+This directory is ignored by `.gitignore`. We keep useful final checkpoints and logs locally, but do not push large intermediate training outputs to GitHub.
 
-最终 agent 放在：
+Final agents are stored in:
 
 ```text
 local_agents/
 ```
 
-当前 replay 放在：
+Current replays are stored in:
 
 ```text
 replays/

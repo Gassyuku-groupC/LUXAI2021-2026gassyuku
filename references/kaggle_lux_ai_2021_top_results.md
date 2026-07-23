@@ -1,27 +1,27 @@
 # Kaggle Top Solution References
 
-本文件记录 Lux AI 2021 top solution 的参考来源。当前项目的主要策略是先学习强队方案，再在本地做小规模模仿学习和自博弈微调。
+This file records useful Lux AI 2021 top-solution references. The current project strategy is to learn from strong existing solutions first, then run small-scale imitation learning and self-play finetuning locally.
 
-## 核心参考
+## Core References
 
 - 1st place code: https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021
 - 1st place write-up: https://www.kaggle.com/c/lux-ai-2021/discussion/294993
 - Lux AI 2021 solutions index: https://www.kaggle.com/c/lux-ai-2021/discussion/294459
 
-本仓库直接基于 1st place 开源代码整理，因此第一名方案既是代码基础，也是当前 teacher finetune 路线的主要参考。
+This repository is directly based on the first-place open-source code, so that solution is both the code foundation and the main reference for the current teacher-finetuning route.
 
-## 重点学习方向
+## Strategy Topics To Study
 
-从 top solution 中优先关注这些问题：
+The most important ideas to study from top solutions are:
 
-- 城市建设: 何时把满载 worker 转换为 city tile，如何避免过早扩张导致夜晚燃料不足。
-- worker 数量: city tile 生产 worker 的节奏，如何避免单位过少导致采矿不足，也避免单位过多造成拥堵。
-- 资源策略: 前期 wood 稳定供给，中期研究 coal，后期研究 uranium，并根据地图大小调整资源优先级。
-- 研究节奏: city tile 在 build worker 和 research 之间的权衡。
-- 自博弈稳定性: teacher KL、历史 opponent、不同地图尺寸训练对策略稳定性的作用。
-- 生存优先: 在当前阶段，360 turn 生存能力比最终分数更重要。
+- City building: when to convert a full worker into a city tile, and how to avoid expanding too early without enough night fuel.
+- Worker count: how city tiles balance worker production against research.
+- Resource strategy: stable early wood, mid-game coal research, later uranium research, and map-size-specific priorities.
+- Research timing: how city tiles choose between `build worker` and `research`.
+- Self-play stability: the role of teacher KL, historical opponents, and mixed map-size training.
+- Survival-first evaluation: at this stage, surviving to 360 turns matters more than final score.
 
-## 可继续阅读的方案
+## Additional Solutions
 
 - 4th place: https://www.kaggle.com/c/lux-ai-2021/discussion/296938
 - 5th place: https://www.kaggle.com/c/lux-ai-2021/discussion/293911
@@ -34,13 +34,13 @@
 
 ## Kaggle Code Page
 
-Kaggle code 页面：
+Kaggle code page:
 
 ```text
 https://www.kaggle.com/competitions/lux-ai-2021/code?competitionId=30067&sortBy=scoreDescending&excludeNonAccessedDatasources=true
 ```
 
-这个页面需要 Kaggle 登录状态才能稳定查看 score-sorted notebooks。若要下载 notebook，可以配置 Kaggle API token：
+This page usually requires an authenticated Kaggle session to reliably inspect score-sorted notebooks. To download notebooks through the Kaggle API, configure a Kaggle API token and run:
 
 ```powershell
 .\.venv\Scripts\activate
@@ -48,4 +48,4 @@ kaggle kernels list --competition lux-ai-2021 --sort-by scoreDescending
 kaggle kernels pull <owner>/<kernel-slug> --path references\kaggle_code\<kernel-slug>
 ```
 
-当前仓库没有直接导入 Kaggle notebook，主要使用第一名开源仓库和公开 discussion 作为参考。
+The current repository does not directly import Kaggle notebooks. It mainly uses the first-place open-source repository and public discussion posts as references.

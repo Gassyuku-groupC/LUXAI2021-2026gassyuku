@@ -1,31 +1,31 @@
 # GPU and Large Map Training Notes
 
-本文件记录 GPU 训练和大地图扩展路线。当前主线仍以 16x16 为起点，32x32 属于后续扩展目标。
+This file records the GPU training and large-map extension plan. The current main route still starts from 16x16. 32x32 training is a later expansion target.
 
-## 本地 GPU
+## Local GPU
 
-本地机器已验证可使用 NVIDIA GPU 进行 PyTorch 训练。检查命令：
+The local machine has been verified to support PyTorch GPU training. Check with:
 
 ```powershell
 .\.venv\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda); print(torch.cuda.get_device_name(0))"
 ```
 
-如果 `torch.cuda.is_available()` 返回 `True`，即可使用：
+If `torch.cuda.is_available()` returns `True`, the configs can use:
 
 ```yaml
 actor_device: cuda:0
 learner_device: cuda:0
 ```
 
-## 地图配置传递
+## Passing Map Configuration
 
-原项目训练入口没有直接把任意 Lux engine configuration 从 Hydra 传到环境中。本仓库保留了以下本地改动：
+The original training entry point did not directly pass arbitrary Lux engine configuration from Hydra into the environment. This repository keeps the following local changes:
 
-- `run_monobeast.py`: 增加默认 `env_configuration={}`。
-- `lux_ai/lux_gym/__init__.py`: 创建环境时传入 `flags.env_configuration`。
-- `lux_ai/lux_gym/lux_env.py`: 先读取官方默认配置，再合并自定义 `width`、`height`、`loglevel`。
+- `run_monobeast.py`: adds default `env_configuration={}`.
+- `lux_ai/lux_gym/__init__.py`: passes `flags.env_configuration` when creating `LuxEnv`.
+- `lux_ai/lux_gym/lux_env.py`: loads the official default config first, then merges custom `width`, `height`, and `loglevel`.
 
-因此可以在 YAML 中写：
+Therefore YAML configs can include:
 
 ```yaml
 env_configuration:
@@ -34,37 +34,37 @@ env_configuration:
   loglevel: 0
 ```
 
-也可以在命令行覆盖：
+The same values can also be overridden from the command line:
 
 ```powershell
 +env_configuration.width=32 +env_configuration.height=32
 ```
 
-## 当前主训练
+## Current Main Training
 
-当前主训练不是 32x32，而是：
+The current main training config is not 32x32. It is:
 
 ```text
 conf/conv_teacher_finetune_16x16.yaml
 ```
 
-目标：
+Goals:
 
-- 100000 steps 小规模验证。
-- 每 10000 learner steps 保存 checkpoint。
-- 使用 teacher imitation / teacher KL 稳定策略。
-- 通过 replay 检查生存、扩张、研究和采矿行为。
+- Small-scale 100000-step validation.
+- Save checkpoints every 10000 learner steps.
+- Stabilize policy with teacher imitation / teacher KL.
+- Use replays to inspect survival, expansion, research, and mining behavior.
 
-## 扩展到 24x24 / 32x32
+## Extending To 24x24 / 32x32
 
-后续扩展顺序建议：
+Suggested order:
 
-1. 继续在 16x16 上修正奖励和行为问题。
-2. 跑 24x24 小规模训练，观察是否能保持扩张和 fuel 管理。
-3. 跑 32x32 小规模训练，观察 worker 是否能有效分散。
-4. 最后使用 `conv_teacher_finetune_random_sizes.yaml` 混合地图尺寸训练。
+1. Continue fixing reward and behavior issues on 16x16.
+2. Run a small 24x24 experiment and inspect expansion and fuel management.
+3. Run a small 32x32 experiment and inspect whether workers spread effectively.
+4. Use `conv_teacher_finetune_random_sizes.yaml` for mixed map-size training.
 
-对应配置：
+Related configs:
 
 ```text
 conf/conv_teacher_finetune_24x24.yaml
@@ -72,7 +72,7 @@ conf/conv_teacher_finetune_32x32.yaml
 conf/conv_teacher_finetune_random_sizes.yaml
 ```
 
-## 32x32 示例命令
+## 32x32 Example Command
 
 ```powershell
 $env:WANDB_MODE="offline"
@@ -83,7 +83,7 @@ $env:WANDB_MODE="offline"
   disable_wandb=True
 ```
 
-如果显存不足，可以优先降低：
+If VRAM is insufficient, reduce these first:
 
 - `num_actors`
 - `n_actor_envs`
@@ -92,15 +92,15 @@ $env:WANDB_MODE="offline"
 - `n_blocks`
 - `hidden_dim`
 
-## 观察指标
+## Replay Metrics
 
-大地图训练时不要只看训练是否结束，还要看 replay：
+For large-map training, do not only check whether training completed. Inspect replays and record:
 
-- 360 turn 是否能稳定存活。
-- 是否只集中在一个 wood 点，还是能扩张到多个资源区。
-- research 是否能到 50 和 200。
-- city fuel 是否能覆盖夜晚 upkeep。
-- worker 是否拥堵或空转。
-- 对手压力下是否还能保留城市和 worker。
+- Whether the agent survives to 360 turns.
+- Whether it stays around one wood patch or expands to multiple resource areas.
+- Whether research reaches 50 and 200.
+- Whether city fuel covers night upkeep.
+- Whether workers are congested or idle.
+- Whether cities and workers remain stable under opponent pressure.
 
-这些指标决定是否继续放大训练步数。
+These metrics should decide whether a run is worth scaling to more training steps.
