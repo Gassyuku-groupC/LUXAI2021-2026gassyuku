@@ -1,201 +1,173 @@
-# Lux AI 2021 Visualization and Training Guide
+# Visualization and Training Guide
 
-This guide is for the imported 1st place solution repository:
+本文件说明当前仓库的训练、打包、replay 和可视化链路。项目基于 `IsaiahPressman/Kaggle_Lux_AI_2021`，但当前文档以本地小组实验路线为准。
 
-https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021
+## 官方可视化工具
 
-## Replay Visualization
+Lux AI 2021 官方 visualizer：
 
-### Online Visualizer
-
-The official Season 1 visualizer is hosted here:
-
+```text
 https://2021vis.lux-ai.org/
+```
 
-Use it like this:
+使用方式：
 
-1. Open the visualizer URL in a browser.
-2. Click or drag into "Upload a replay".
-3. Select a replay JSON, for example:
-   `replays/first_place_validation_12x12.json`
-4. Use play/pause, timeline scrubbing, zoom, pan, stats, warnings, and debug
-   annotation toggles to inspect the game.
+1. 打开网页。
+2. 上传 replay JSON。
+3. 选择当前 replay：
 
-The current validation replay was generated with `--statefulReplay=true`, so it
-contains richer map state than the minimal action-only replay.
+```text
+replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
+```
 
-### Local Visualizer
+4. 使用时间轴、缩放、统计信息和 debug annotation 检查 agent 行为。
 
-The visualizer source/release project is:
+## 本地 Visualizer
 
+官方本地 visualizer 项目：
+
+```text
 https://github.com/Lux-AI-Challenge/LuxViewer2021
+```
 
-The documented local workflow is:
-
-1. Download a release from `LuxViewer2021`.
-2. Unzip it; it should contain a `dist` directory.
-3. Serve `dist` locally.
-
-With npm:
+基本流程：
 
 ```powershell
 npm i -g serve
 serve dist
 ```
 
-Then open:
+然后打开：
 
 ```text
 http://localhost:5000
 ```
 
-Higher quality rendering can be requested by appending `?scale=2`; lower quality
-can use `?scale=1`.
-
-## Generating More Replays
-
-The official Season 1 engine/CLI is `lux-ai-2021`. In this project it is
-installed locally through `@lux-ai/2021-challenge@3.1.1`.
-
-Set PATH for the current PowerShell session:
+如果使用当前仓库的 Node 依赖，先运行：
 
 ```powershell
-$env:PATH="C:\Users\YE ZIHAN\.venvs\lux-ai-2021\Scripts;C:\Users\YE ZIHAN\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;$env:PATH"
+pnpm install
 ```
 
-Generate a 12x12 stateful replay:
+## 生成 Replay
+
+Lux AI 2021 CLI 来自 npm 包 `@lux-ai/2021-challenge`，当前仓库通过 `package.json` 和 `pnpm-lock.yaml` 管理。
+
+示例命令：
 
 ```powershell
 .\node_modules\.bin\lux-ai-2021.CMD `
-  internal_testing\hall_of_fame\11-24_12-56-23_062179520_must_research\main.py `
+  local_agents\teacher_finetune_16x16_100000\main.py `
   internal_testing\public_agents\working_title_bot_tong_hui_kang\main.py `
-  --python "C:\Users\YE ZIHAN\.venvs\lux-ai-2021\Scripts\python.exe" `
+  --python ".\.venv\Scripts\python.exe" `
   --loglevel 2 `
   --memory 8000 `
   --maxtime 20000 `
-  --width 12 `
-  --height 12 `
+  --width 16 `
+  --height 16 `
+  --seed 12345 `
   --storeLogs=true `
   --statefulReplay=true `
-  --out replays\my_validation_12x12.json
+  --out replays\teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
 ```
 
-## Training Overview
+`--statefulReplay=true` 很重要，它会保存更完整的地图状态，方便 visualizer 检查资源、单位、城市和 fuel 变化。
 
-The repository trains through:
+## 训练入口
+
+训练主入口：
 
 ```text
-run_monobeast.py -> lux_ai/torchbeast/monobeast.py -> lux_ai/lux_gym/LuxEnv
+run_monobeast.py
 ```
 
-The algorithm is a TorchBeast/IMPALA-style self-play loop with V-trace, UPGO,
-TD-lambda, optional teacher KL, and Hydra YAML configs under `conf/`.
+内部链路：
 
-Important local constraints:
+```text
+run_monobeast.py
+  -> lux_ai/torchbeast/monobeast.py
+  -> lux_ai/lux_gym/__init__.py
+  -> lux_ai/lux_gym/lux_env.py
+  -> official lux-ai-2021 engine
+```
 
-- `LuxEnv` launches `node .../dimensions/main.js`, so `node` must be on PATH.
-- The original configs assume CUDA devices like `cuda:0` and `cuda:1`.
-- `resume_config.yaml` contains original author absolute paths; do not use it
-  unchanged locally.
-- For local first checks, disable W&B and use CPU/small settings.
-- Full training is expensive; the 1st place write-up describes multi-GPU,
-  overnight training.
+当前主配置：
 
-## Training Smoke Test
+```text
+conf/conv_teacher_finetune_16x16.yaml
+```
 
-Run this first to verify the pipeline, not to get a strong model:
+运行示例：
 
 ```powershell
-$env:PATH="C:\Users\YE ZIHAN\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;$env:PATH"
 $env:WANDB_MODE="offline"
-.\.venv\Scripts\python.exe run_monobeast.py `
-  --config-name conv_config `
-  actor_device=cpu `
-  learner_device=cpu `
-  disable_wandb=True `
-  use_teacher=False `
-  +use_mixed_precision=False `
-  sharing_strategy=file_system `
-  num_actors=1 `
-  n_actor_envs=1 `
-  batch_size=1 `
-  unroll_length=2 `
-  total_steps=4 `
-  +checkpoint_freq=1 `
-  model_log_freq=1 `
-  n_blocks=1 `
-  hidden_dim=16 `
-  embedding_dim=8
+.\.venv\Scripts\python.exe run_monobeast.py --config-name conv_teacher_finetune_16x16
 ```
 
-Expected output:
+## 当前训练思路
 
-- Hydra creates an `outputs/<date>/<time>/` directory.
-- A `config.yaml` appears in that run directory.
-- Checkpoints are saved periodically as `*.pt`.
-- The validated local smoke test reached `Learning finished after 4 steps` and
-  saved checkpoint `4`.
-
-If this fails on Windows multiprocessing or Node subprocess behavior, use WSL2
-or the Docker path below.
-
-## Training With GPU
-
-For the verified local CUDA 13.2 / 32x32 setup, see:
+当前路线是：
 
 ```text
-references/gpu_32x32_training.md
+1st place teacher/reference
+  -> 16x16 imitation / teacher KL
+  -> self-play finetune
+  -> checkpoint every 10000 steps
+  -> package agent
+  -> replay validation
+  -> visualizer inspection
 ```
 
-Once the smoke test works, use a real config and override local paths/devices.
-For example, phase 1 shaped reward:
+训练优先目标：
 
-```powershell
-$env:PATH="C:\Users\YE ZIHAN\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin;$env:PATH"
-.\.venv\Scripts\python.exe run_monobeast.py `
-  --config-name conv_phase1_shaped_reward `
-  actor_device=cuda:0 `
-  learner_device=cuda:0 `
-  disable_wandb=True `
-  +use_mixed_precision=True `
-  sharing_strategy=file_system
+- 不只追求早期得分，而是让单位和城市活得更久。
+- 前期稳定采 wood，保证第一夜和第二夜燃料。
+- 在 city tile 数量允许时研究 coal 和 uranium。
+- 逐步扩张城市，但不要让 fuel upkeep 失控。
+- 观察 worker 是否分散、是否拥堵、是否能把资源送回城市。
+
+## 地图尺寸策略
+
+Lux AI 2021 合法地图尺寸包括：
+
+```text
+12x12, 16x16, 24x24, 32x32
 ```
 
-If `conv_phase1_shaped_reward.yaml` raises
-`FixedShapeContinuousObsV2() takes no arguments`, remove or adjust
-`obs_space_kwargs.include_subtask_encoding` for that config before using it for
-local training. The generic `conv_config.yaml` smoke test above avoids this
-issue.
+当前选择 16x16 作为起点，原因是：
 
-For later phases with a teacher model:
+- 比 12x12 有更多资源和扩张空间。
+- 比 24x24/32x32 训练更快。
+- 更适合先验证模仿学习和自博弈微调是否有效。
 
-1. Pick a previous run directory under `outputs/`.
-2. Set `teacher_load_dir=<that-run-dir>`.
-3. Set `teacher_checkpoint_file=<checkpoint>.pt`.
-4. Keep `use_teacher=True`.
+后续可以使用：
 
-Avoid using the original `teacher_load_dir` values in the configs because they
-point to the original author's machine.
+```text
+conf/conv_teacher_finetune_24x24.yaml
+conf/conv_teacher_finetune_32x32.yaml
+conf/conv_teacher_finetune_random_sizes.yaml
+```
 
-## Recommended Experiment Order
+逐步测试地图尺寸变化对策略的影响。
 
-1. `conv_phase1_shaped_reward.yaml`: small 8-block model with shaped rewards.
-2. `conv_phase2_game_result.yaml`: transition toward game-result reward.
-3. `conv_phase3_small_teacher.yaml`: train with a smaller teacher.
-4. `conv_phase4_small_teacher.yaml`: continue scaling.
-5. `conv_phase5+_final_model.yaml`: final larger model style.
+## 输出和清理
 
-Use tiny overrides for debugging, then gradually increase:
+训练输出位于：
 
-- `total_steps`
-- `num_actors`
-- `n_actor_envs`
-- `batch_size`
-- `n_blocks`
+```text
+outputs/
+```
 
-## Docker/WSL Recommendation
+该目录已被 `.gitignore` 忽略。当前只在本地保留最终有用 checkpoint 和日志，不把大量中间训练记录推送到 GitHub。
 
-For serious training, prefer Linux via Docker or WSL2. The project Dockerfile
-already installs Python dependencies and Node.js. Windows native training may
-work for small smoke tests, but the original code path was designed around
-Linux-like multiprocessing and long-running Node subprocesses.
+最终 agent 放在：
+
+```text
+local_agents/
+```
+
+当前 replay 放在：
+
+```text
+replays/
+```

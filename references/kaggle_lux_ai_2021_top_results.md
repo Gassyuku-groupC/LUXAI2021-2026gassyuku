@@ -1,36 +1,28 @@
-# Kaggle Lux AI 2021 Top References
+# Kaggle Top Solution References
 
-This project is already the imported open-source code for the 1st place Lux AI
-2021 solution:
+本文件记录 Lux AI 2021 top solution 的参考来源。当前项目的主要策略是先学习强队方案，再在本地做小规模模仿学习和自博弈微调。
+
+## 核心参考
 
 - 1st place code: https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021
 - 1st place write-up: https://www.kaggle.com/c/lux-ai-2021/discussion/294993
+- Lux AI 2021 solutions index: https://www.kaggle.com/c/lux-ai-2021/discussion/294459
 
-## Kaggle Code Page
+本仓库直接基于 1st place 开源代码整理，因此第一名方案既是代码基础，也是当前 teacher finetune 路线的主要参考。
 
-The requested Kaggle Code page is:
+## 重点学习方向
 
-https://www.kaggle.com/competitions/lux-ai-2021/code?competitionId=30067&sortBy=scoreDescending&excludeNonAccessedDatasources=true
+从 top solution 中优先关注这些问题：
 
-Kaggle serves this page as a React app. Without a Kaggle login/API token, the
-raw HTML does not include the score-sorted notebook list, so notebooks cannot be
-reliably downloaded from the page in an unauthenticated session.
+- 城市建设: 何时把满载 worker 转换为 city tile，如何避免过早扩张导致夜晚燃料不足。
+- worker 数量: city tile 生产 worker 的节奏，如何避免单位过少导致采矿不足，也避免单位过多造成拥堵。
+- 资源策略: 前期 wood 稳定供给，中期研究 coal，后期研究 uranium，并根据地图大小调整资源优先级。
+- 研究节奏: city tile 在 build worker 和 research 之间的权衡。
+- 自博弈稳定性: teacher KL、历史 opponent、不同地图尺寸训练对策略稳定性的作用。
+- 生存优先: 在当前阶段，360 turn 生存能力比最终分数更重要。
 
-After adding a Kaggle API token at `%USERPROFILE%\.kaggle\kaggle.json`, use:
+## 可继续阅读的方案
 
-```powershell
-.\.venv\Scripts\activate
-kaggle kernels list --competition lux-ai-2021 --sort-by scoreDescending
-kaggle kernels pull <owner>/<kernel-slug> --path references\kaggle_code\<kernel-slug>
-```
-
-## Top Solution Discussions
-
-The following links are indexed by the public Kaggle Solutions archive for Lux AI
-2021 and are useful references for comparing against this repository:
-
-- All solutions: https://www.kaggle.com/c/lux-ai-2021/discussion/294459
-- 1st place: https://www.kaggle.com/c/lux-ai-2021/discussion/294993
 - 4th place: https://www.kaggle.com/c/lux-ai-2021/discussion/296938
 - 5th place: https://www.kaggle.com/c/lux-ai-2021/discussion/293911
 - 6th place: https://www.kaggle.com/c/lux-ai-2021/discussion/293776
@@ -40,10 +32,20 @@ The following links are indexed by the public Kaggle Solutions archive for Lux A
 - 20th place: https://www.kaggle.com/c/lux-ai-2021/discussion/294098
 - 34th place slides: https://speakerdeck.com/kuto5046/lux-ai-34th-place-solution
 
-## Local Notes
+## Kaggle Code Page
 
-- The current repository is the strongest confirmed reference because it is the
-  1st place open-source solution.
-- For real Lux AI matches, Node.js is required by the official environment. The
-  Dockerfile in this project includes Node.js, while the current Windows host
-  does not have `node` on PATH.
+Kaggle code 页面：
+
+```text
+https://www.kaggle.com/competitions/lux-ai-2021/code?competitionId=30067&sortBy=scoreDescending&excludeNonAccessedDatasources=true
+```
+
+这个页面需要 Kaggle 登录状态才能稳定查看 score-sorted notebooks。若要下载 notebook，可以配置 Kaggle API token：
+
+```powershell
+.\.venv\Scripts\activate
+kaggle kernels list --competition lux-ai-2021 --sort-by scoreDescending
+kaggle kernels pull <owner>/<kernel-slug> --path references\kaggle_code\<kernel-slug>
+```
+
+当前仓库没有直接导入 Kaggle notebook，主要使用第一名开源仓库和公开 discussion 作为参考。
