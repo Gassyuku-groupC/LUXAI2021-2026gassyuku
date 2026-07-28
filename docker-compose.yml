@@ -1,0 +1,10 @@
+services:
+  lux-ai-2021:
+    build: .
+    image: lux-ai-2021:local
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      WANDB_MODE: offline
+    command: python -c "import kaggle_environments, torch, gym; print('Lux AI environment ready')"

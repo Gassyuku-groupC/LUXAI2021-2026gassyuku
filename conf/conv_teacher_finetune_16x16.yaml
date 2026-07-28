@@ -1,0 +1,74 @@
+defaults:
+- override hydra/job_logging: colorlog
+- override hydra/hydra_logging: colorlog
+
+hydra:
+  run:
+    dir: ./outputs/teacher_finetune_16x16/${now:%m-%d_%H-%M-%S}
+
+name: teacher_finetune_16x16
+project: Lux_AI_2021
+entity: isaiahpressman
+group: local_teacher_finetune
+
+act_space: BasicActionSpace
+obs_space: FixedShapeContinuousObsV2
+obs_space_kwargs: {}
+reward_space: GameResultReward
+reward_space_kwargs: {}
+
+total_steps: 100000
+num_actors: 1
+n_actor_envs: 2
+unroll_length: 16
+batch_size: 2
+discounting: 0.999
+
+model_arch: conv_model
+n_blocks: 24
+hidden_dim: 128
+embedding_dim: 32
+n_merge_layers: 1
+normalize: False
+sum_player_embeddings: False
+use_index_select: False
+rescale_value_input: True
+rescale_se_input: True
+kernel_size: 5
+
+optimizer_class: Adam
+optimizer_kwargs:
+  lr: 1e-5
+  eps: 0.0003
+min_lr_mod: 0.01
+
+entropy_cost: 0.00002
+baseline_cost: 1.
+teacher_kl_cost: 0.002
+teacher_baseline_cost: 0.0
+lmb: 0.9
+reduction: sum
+
+use_teacher: True
+teacher_load_dir: D:/Luxai/Kaggle_Lux_AI_2021/internal_testing/hall_of_fame/11-24_12-56-23_062179520_must_research/lux_ai/rl_agent
+teacher_checkpoint_file: 062179520_weights.pt
+
+load_dir: D:/Luxai/Kaggle_Lux_AI_2021/internal_testing/hall_of_fame/11-24_12-56-23_062179520_must_research/lux_ai/rl_agent
+checkpoint_file: 062179520_weights.pt
+weights_only: True
+n_value_warmup_batches: 0
+
+actor_device: cuda:0
+learner_device: cuda:0
+model_log_freq: 1000
+sharing_strategy: file_system
+disable_wandb: True
+debug: False
+use_mixed_precision: True
+checkpoint_freq: 10000
+num_learner_threads: 1
+
+env_configuration:
+  width: 16
+  height: 16
+  loglevel: 0
