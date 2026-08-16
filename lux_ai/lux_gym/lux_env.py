@@ -84,11 +84,12 @@ class LuxEnv(gym.Env):
         self.restart_subproc_after_n_resets = restart_subproc_after_n_resets
 
         self.game_state = Game()
-        self.configuration = make("lux_ai_2021").configuration
-        # 2: warnings, 1: errors, 0: none
-        self.configuration["loglevel"] = 0
         if configuration is not None:
-            self.configuration.update(configuration)
+            self.configuration = configuration
+        else:
+            self.configuration = make("lux_ai_2021").configuration
+            # 2: warnings, 1: errors, 0: none
+            self.configuration["loglevel"] = 0
         if seed is not None:
             self.seed(seed)
         elif "seed" not in self.configuration:

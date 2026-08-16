@@ -50,7 +50,6 @@ def create_env(flags, device: torch.device, teacher_flags: Optional = None, seed
         env = LuxEnv(
             act_space=flags.act_space(),
             obs_space=create_flexible_obs_space(flags, teacher_flags),
-            configuration=flags.env_configuration,
             seed=seed
         )
         reward_space = create_reward_space(flags)
