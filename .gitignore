@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.ipynb_checkpoints/
+
+replays/
+outputs/
+dataset/
+*.commands.json
+*.stdout.log
+*.stderr.log
