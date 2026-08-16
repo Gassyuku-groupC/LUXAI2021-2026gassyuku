@@ -1,6 +1,6 @@
 # Lux AI 2021 Runtime Scorer Gate Agent
 
-This repository contains a packaged Lux AI 2021 agent. The entry point is `main.py`.
+This repository contains a Lux AI 2021 runtime scorer gate agent. The root directory is directly runnable as an agent through `main.py`, and the repository also includes the minimal training/diagnostic scripts needed to rebuild the gate from replay data.
 
 ## Package Contents
 
@@ -11,6 +11,23 @@ This repository contains a packaged Lux AI 2021 agent. The entry point is `main.
 - `lux_ai/rl_agent/rl_agent_config.yaml`: runtime configuration.
 
 Generated replay files, evaluation outputs, training shards, and datasets are intentionally excluded from this package.
+
+## Repository Layout
+
+- `main.py`: submission/runtime entry point.
+- `lux_ai/`: bundled runtime agent code.
+- `conf/`: selected training configuration files for the base RL pipeline and later survival/gate experiments.
+- `scripts/`: replay labeling, scorer training, dry-run gate validation, and evaluation helpers.
+- `requirements.txt`: Python dependencies used by the packaged workflow.
+- `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`: Lux AI 2021 local engine dependencies.
+
+The repository intentionally does not include:
+
+- downloaded Kaggle replay datasets
+- processed label CSVs or shards
+- local evaluation outputs
+- replay JSON outputs
+- historical failed experiment branches
 
 ## Runtime Idea
 
@@ -26,6 +43,31 @@ Typical local environment:
 
 ```bash
 pip install torch numpy pyyaml joblib lightgbm
+```
+
+For local matches, install the Lux AI 2021 engine dependencies with the included Node package files.
+
+## Rebuilding The Gate
+
+After placing replay JSON files under a local dataset directory, the high-level workflow is:
+
+```bash
+python scripts/build_strategy_label_dataset.py --help
+python scripts/validate_strategy_labels.py --help
+python scripts/train_strategy_label_scorers.py --help
+python scripts/score_strategy_label_scorers.py --help
+```
+
+The generated scorer files should be copied into:
+
+```text
+lux_ai/rl_agent/strategy_scorers/
+```
+
+The runtime behavior is configured in:
+
+```text
+lux_ai/rl_agent/rl_agent_config.yaml
 ```
 
 ## Local Match

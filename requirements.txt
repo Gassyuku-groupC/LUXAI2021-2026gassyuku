@@ -1,0 +1,22 @@
+numpy<2
+scipy
+pandas
+scikit-learn
+joblib
+lightgbm
+gym==0.26.2
+kaggle-environments==1.8.12
+kaggle
+--extra-index-url https://download.pytorch.org/whl/cu132
+torch==2.12.1+cu132
+omegaconf
+hydra-core
+hydra-colorlog
+wandb
+PyYAML
+fire
+psutil
+tqdm
+requests
+matplotlib
+plotly
