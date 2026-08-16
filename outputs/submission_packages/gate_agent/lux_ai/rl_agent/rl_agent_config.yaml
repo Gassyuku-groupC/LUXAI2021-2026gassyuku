@@ -1,0 +1,53 @@
+device: player_id
+#device: cpu
+runtime_torch_num_threads: 1
+
+# Use manual preference based collision detection
+use_collision_detection: True
+# Bans no-ops after the first night until research is complete
+# Has no effect when use_collision_detection is False
+must_research: True
+# Whether to allow carts
+can_build_carts: False
+
+# Runtime scorer-based safety gate.
+# Loads small all-map LightGBM scorers and only blocks model-selected
+# BUILD_WORKER / BUILD_CITY actions when predicted risk is extreme.
+runtime_scorer_gate_enabled: True
+runtime_scorer_gate_late_turn: 160
+runtime_scorer_gate_late_turn_by_map_size:
+  32: 320
+runtime_scorer_gate_hold_turn: 340
+runtime_scorer_gate_hold_turn_by_map_size:
+  32: 340
+runtime_scorer_gate_hold_min_city_tiles: 10
+runtime_scorer_gate_hold_min_city_tiles_by_map_size:
+  32: 30
+runtime_scorer_gate_hold_min_p25_fuel: 5.0
+runtime_scorer_gate_pre_night_turns: 3
+runtime_scorer_gate_risk_big_loss_threshold: 0.60
+runtime_scorer_gate_risk_big_loss_threshold_by_map_size:
+  32: 0.60
+runtime_scorer_gate_error_failed_threshold: 0.30
+runtime_scorer_gate_disable_before_turn: 120
+runtime_scorer_gate_disable_before_turn_by_map_size:
+  32: 240
+runtime_scorer_gate_night_after_turn: 80
+runtime_scorer_gate_night_after_turn_by_map_size:
+  32: 240
+runtime_scorer_gate_max_map_size: 32
+runtime_no_augmentations_above_map_size: 24
+runtime_scorer_gate_only_bw_bcity: True
+runtime_scorer_gate_actions:
+  - BUILD_WORKER
+
+# NB: Kaggle servers are slow and do not provide time for inference on all augmentations
+# For medium (16-layer/128-wide) models, we can only use 2 data augmentations
+# For large (24-layer/128-wide) models, we can only use 1 data augmentation
+data_augmentations:
+  #- player_relative_reflection
+  #- VerticalFlip
+  #- HorizontalFlip
+  #- Rot90
+  - Rot180
+  #- Rot270
