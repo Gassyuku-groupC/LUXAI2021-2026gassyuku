@@ -42,8 +42,6 @@ class Game:
         self.turn += 1
         self._reset_player_states()
 
-        skip = getattr(self, "skip", None)
-
         for update in messages:
             if update == "D_DONE":
                 break
@@ -57,8 +55,7 @@ class Game:
                 x = int(strs[2])
                 y = int(strs[3])
                 amt = int(float(strs[4]))
-                if (x, y) != skip:
-                    self.map._setResource(r_type, x, y, amt)
+                self.map._setResource(r_type, x, y, amt)
             elif input_identifier == INPUT_CONSTANTS.UNITS:
                 unittype = int(strs[1])
                 team = int(strs[2])
@@ -69,8 +66,7 @@ class Game:
                 wood = int(strs[7])
                 coal = int(strs[8])
                 uranium = int(strs[9])
-                if (x, y) != skip:
-                    self.players[team].units.append(Unit(team, unittype, unitid, x, y, cooldown, wood, coal, uranium))
+                self.players[team].units.append(Unit(team, unittype, unitid, x, y, cooldown, wood, coal, uranium))
             elif input_identifier == INPUT_CONSTANTS.CITY:
                 team = int(strs[1])
                 cityid = strs[2]
@@ -84,16 +80,14 @@ class Game:
                 y = int(strs[4])
                 cooldown = float(strs[5])
                 city = self.players[team].cities[cityid]
-                if (x, y) != skip:
-                    citytile = city._add_city_tile(x, y, cooldown)
-                    self.map.get_cell(x, y).citytile = citytile
-                    self.players[team].city_tile_count += 1
+                citytile = city._add_city_tile(x, y, cooldown)
+                self.map.get_cell(x, y).citytile = citytile
+                self.players[team].city_tile_count += 1
             elif input_identifier == INPUT_CONSTANTS.ROADS:
                 x = int(strs[1])
                 y = int(strs[2])
                 road = float(strs[3])
-                if (x, y) != skip:
-                    self.map.get_cell(x, y).road = road
+                self.map.get_cell(x, y).road = road
 
     @property
     def is_night(self) -> bool:
