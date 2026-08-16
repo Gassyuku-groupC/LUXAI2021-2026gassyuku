@@ -1,0 +1,17 @@
+defaults:
+  - conv_teacher_bc_dagger_v15_aux_loss20
+  - _self_
+
+name: conv_teacher_bc_dagger_v15b_aux_loss20_soft
+group: local_teacher_bc_dagger_v15b_aux_loss20_soft
+
+# v15 over-drifted by 32 games. Keep the same conservative architecture but
+# reduce the auxiliary pressure so loss20 teaches features without dominating.
+aux_risk_cost: 0.02
+
+total_games: 16
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v15b_aux_loss20_soft/${now:%Y-%m-%d_%H-%M-%S}
