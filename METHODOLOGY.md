@@ -37,33 +37,78 @@ These labels allow the gate to focus on harmful city loss rather than treating e
 
 ```mermaid
 flowchart TD
-    A["Lux Observation"] --> B["Feature Builder / Env Wrapper"]
-    B --> C["Base RL Neural Policy"]
-    C --> D["Candidate Actions / Logits"]
+    A["Lux AI Observation<br/>game updates, map, units, city tiles, research"] --> B["Environment Wrappers<br/>FixedShapeContinuousObsV2<br/>pad board to 32x32"]
+    B --> C["Input Features<br/>spatial tensor: C x 32 x 32<br/>+ legal action masks"]
 
-    B --> E["State Feature Extractor"]
-    E --> F["LightGBM Risk Scorers"]
-    F --> G["Risk Scores<br/>risk_big_loss_20<br/>error_failed_big_loss"]
+    C --> D["Conv Embedding Input Layer<br/>embedding_dim=32<br/>hidden_dim=128"]
+    D --> E["Residual CNN Trunk x24<br/>conv_model<br/>5x5 kernels"]
 
-    D --> H["Runtime Scorer Gate"]
-    G --> H
-    H --> I["Filtered Final Actions"]
-    I --> J["Lux Engine"]
-
-    subgraph "Offline Training"
-        K["Replay JSON"] --> L["Strategy Label Dataset"]
-        L --> M["Train Risk Scorers"]
-        M --> F
+    subgraph RB["One Residual Block"]
+        RB1["5x5 Conv2d"] --> RB2["LeakyReLU"]
+        RB2 --> RB3["5x5 Conv2d"]
+        RB3 --> RB4["SE-Layer<br/>Squeeze-and-Excitation"]
+        RB4 --> RB5["Skip Connection<br/>x + residual"]
+        RB5 --> RB6["LeakyReLU"]
     end
+
+    E --> F["Shared Spatial Feature Map<br/>128 x 32 x 32"]
+    F --> G["Actor Head Base<br/>1x1 Conv + SpectralNorm + ReLU"]
+    G --> H["DictActor Policy Heads<br/>1x1 Conv per action space"]
+    H --> I["Policy Logits<br/>worker and city-tile actions<br/>masked by legal actions"]
+
+    F --> J["Value Head Base<br/>1x1 Conv + SpectralNorm + ReLU"]
+    J --> K["Baseline Head<br/>masked average pooling<br/>Linear -> value"]
+
+    I --> L["Action Selection<br/>arg-sort logits, no sampling"]
+    L --> M["Collision / Legality Resolver"]
+
+    C --> N["Scalar Strategy Feature Extractor<br/>turn, map size, day/night,<br/>city tiles, units, fuel/upkeep,<br/>p25 fuel buffer, low-fuel cities"]
+    N --> O["LightGBM Risk Scorers<br/>all-map tabular models"]
+    O --> P["Risk Scores<br/>risk_big_loss_20<br/>error_failed_big_loss"]
+
+    M --> Q["Runtime Scorer Gate"]
+    P --> Q
+    Q --> R["Final Lux Actions"]
+    R --> S["Lux Engine"]
 ```
 
 ## Neural Policy
 
-The base policy is the original RL model. It processes the game observation through the bundled Lux environment wrappers and neural network. It outputs city-tile and unit actions, then applies collision handling and legality checks.
+The base policy is a ResNet-style actor-critic model trained with reinforcement learning. The packaged configuration uses:
+
+```text
+observation space: FixedShapeContinuousObsV2
+model_arch:       conv_model
+hidden_dim:       128
+embedding_dim:    32
+n_blocks:         24 residual blocks
+kernel_size:      5
+activation:       LeakyReLU
+residual module:  Conv2d -> LeakyReLU -> Conv2d -> SE-Layer -> skip connection -> LeakyReLU
+policy heads:     1x1 Conv actor heads for worker/city-tile action logits
+value head:       1x1 Conv base + masked average pooling + linear baseline
+runtime aug:      Rot180 test-time augmentation on small/medium maps
+```
+
+The neural network keeps full two-dimensional board structure throughout the convolutional trunk. This is important in Lux AI because local topology matters: city adjacency, worker position, nearby resources, opponent pressure, and collision constraints all depend on spatial layout.
+
+The actor head outputs logits for each action space and board location. Legal-action masks are applied before action selection, and the resolver then handles collision and preference ordering. The value head is used by the RL training pipeline as the baseline estimator.
+
+## Gate Logic
 
 The gate does not replace this neural policy. If the scorer files are missing or fail to load, the system falls back to the base policy.
 
-## Gate Logic
+```mermaid
+flowchart TD
+    A["Actor proposes action<br/>example: BUILD_WORKER"] --> B{"Gate active?<br/>map / turn / night timing"}
+    B -- "no" --> Z["keep actor action"]
+    B -- "yes" --> C{"Risk scorer high?<br/>risk_big_loss_20 >= threshold<br/>or error_failed_big_loss >= threshold"}
+    C -- "no" --> Z
+    C -- "yes" --> D{"Action in gate target list?<br/>currently BUILD_WORKER"}
+    D -- "no" --> Z
+    D -- "yes" --> E["mark action unsafe<br/>remove from final candidates"]
+    E --> F["resolver selects next legal action"]
+```
 
 At inference time, the scorer is evaluated once per turn. If predicted risk is below threshold, the base policy action is used unchanged. If risk is high, the gate marks selected dangerous actions as illegal before final action resolution.
 
