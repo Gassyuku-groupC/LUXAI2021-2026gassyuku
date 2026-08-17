@@ -20,6 +20,8 @@ Generated replay files, evaluation outputs, training shards, and datasets are in
 - `scripts/`: replay labeling, scorer training, dry-run gate validation, and evaluation helpers.
 - `requirements.txt`: Python dependencies used by the packaged workflow.
 - `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`: Lux AI 2021 local engine dependencies.
+- `METHODOLOGY.md`: method and architecture description for team documentation.
+- `TRAINING.md`: replay-label and scorer-training workflow.
 
 The repository intentionally does not include:
 
