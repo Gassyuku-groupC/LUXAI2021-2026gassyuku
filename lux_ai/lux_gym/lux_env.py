@@ -3,11 +3,13 @@ import gym
 import itertools
 import json
 import numpy as np
+import os
 from kaggle_environments import make
 import math
 from pathlib import Path
 from queue import Queue, Empty
 import random
+import shutil
 from subprocess import Popen, PIPE
 import sys
 from threading import Thread
@@ -25,6 +27,12 @@ try:
     from kaggle_environments.envs.lux_ai_2021.lux_ai_2021 import dir_path as DIR_PATH
 except Exception:
     DIR_PATH = None
+
+NODE_BINARY = (
+    os.environ.get("LUX_NODE_BINARY")
+    or shutil.which("node")
+    or r"C:\Users\YE ZIHAN\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+)
 
 
 """
@@ -84,12 +92,24 @@ class LuxEnv(gym.Env):
         self.restart_subproc_after_n_resets = restart_subproc_after_n_resets
 
         self.game_state = Game()
-        if configuration is not None:
-            self.configuration = configuration
-        else:
-            self.configuration = make("lux_ai_2021").configuration
-            # 2: warnings, 1: errors, 0: none
-            self.configuration["loglevel"] = 0
+        self.configuration = make("lux_ai_2021").configuration
+        configuration = dict(configuration or {})
+        self.training_map_sizes = tuple(configuration.pop("trainingMapSizes", ()))
+        self.training_map_sampling = configuration.pop("trainingMapSampling", "random")
+        if self.training_map_sizes:
+            invalid_sizes = set(self.training_map_sizes) - {12, 16, 24, 32}
+            if invalid_sizes:
+                raise ValueError(f"Unsupported Lux map sizes: {sorted(invalid_sizes)}")
+        if self.training_map_sampling not in {"random", "balanced_cycle"}:
+            raise ValueError(
+                f"Unsupported trainingMapSampling: {self.training_map_sampling}"
+            )
+        self._rng = random.Random(seed)
+        self._map_cycle = list(self.training_map_sizes)
+        self._map_cycle_index = 0
+        # 2: warnings, 1: errors, 0: none
+        self.configuration["loglevel"] = 0
+        self.configuration.update(configuration)
         if seed is not None:
             self.seed(seed)
         elif "seed" not in self.configuration:
@@ -109,9 +129,14 @@ class LuxEnv(gym.Env):
         if self._dimension_process is not None:
             self._dimension_process.kill()
         if self.run_game_automatically:
+            if not NODE_BINARY or not Path(NODE_BINARY).exists():
+                raise FileNotFoundError(
+                    "Node.js is required by Lux dimensions. Set LUX_NODE_BINARY "
+                    "to node.exe or add node to PATH."
+                )
             # 1.1: Initialize dimensions in the background
             self._dimension_process = Popen(
-                ["node", str(Path(DIR_PATH) / "dimensions/main.js")],
+                [NODE_BINARY, str(Path(DIR_PATH) / "dimensions/main.js")],
                 stdin=PIPE,
                 stdout=PIPE,
                 stderr=PIPE
@@ -132,6 +157,10 @@ class LuxEnv(gym.Env):
             assert observation_updates is None, "Game is being run automatically"
             # 1.2: Initialize a blank state game if new episode is starting
             self.configuration["seed"] += 1
+            if self.training_map_sizes:
+                map_size = self._select_training_map_size()
+                self.configuration["width"] = map_size
+                self.configuration["height"] = map_size
             initiate = {
                 "type": "start",
                 "agent_names": [],  # unsure if this is provided?
@@ -235,11 +264,28 @@ class LuxEnv(gym.Env):
         if seed is not None:
             # Seed is incremented on reset()
             self.configuration["seed"] = seed - 1
+            self._rng.seed(seed)
+            self._map_cycle = list(self.training_map_sizes)
+            self._map_cycle_index = 0
         else:
             self.configuration["seed"] = math.floor(random.random() * 1e9)
+            self._rng.seed(self.configuration["seed"])
+            self._map_cycle = list(self.training_map_sizes)
+            self._map_cycle_index = 0
 
     def get_seed(self) -> int:
         return self.configuration["seed"]
+
+    def _select_training_map_size(self) -> int:
+        if self.training_map_sampling == "random":
+            return self._rng.choice(self.training_map_sizes)
+        if self._map_cycle_index == 0:
+            self._rng.shuffle(self._map_cycle)
+        map_size = self._map_cycle[self._map_cycle_index]
+        self._map_cycle_index = (
+            self._map_cycle_index + 1
+        ) % len(self._map_cycle)
+        return map_size
 
     def render(self, mode='human'):
         raise NotImplementedError('LuxEnv rendering is not implemented. Use the Lux visualizer instead.')

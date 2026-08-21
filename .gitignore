@@ -1,12 +1,36 @@
 __pycache__/
 *.py[cod]
+*$py.class
+.venv/
+node_modules/
+errorlogs/
+run_monobeast.log
 *.log
 *.tmp
 .ipynb_checkpoints/
 
-replays/
-outputs/
+# Local replay/data products. Rebuild from scripts or local Kaggle downloads.
 dataset/
+replays/
+cerberus_replays/
+external_agents/
+path/
+
+# Hydra experiment outputs
+outputs/
+# Rl agent config and .pt files
+lux_ai/rl_agent/config.yaml
+lux_ai/rl_agent/*.pt
+*.pt
+*_weights.pt
+# RL agent copy for comparing different model weights
+main_2.py
+lux_ai/rl_agent_2/
+# Zipped submission files
+*.tar.gz
+# Retired internal testing agents
+internal_testing/hall_of_fame/retired/
+internal_testing/internal_agents/retired/
 *.commands.json
 *.stdout.log
 *.stderr.log

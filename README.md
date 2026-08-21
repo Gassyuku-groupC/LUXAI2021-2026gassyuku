@@ -80,6 +80,19 @@ From the Lux AI 2021 project root, this agent can be used as a player directory:
 lux-ai-2021 path/to/this/agent path/to/opponent --python python --seed 12345 --width 16 --height 16
 ```
 
+## Actor-Sidecar Training
+
+The experimental training route keeps the legacy actor checkpoint compatible while adding a
+pooled-KV spatial risk sidecar and a zero-initialized logit-delta gate. The intended sequence is:
+
+1. Build grouped replay shards with `scripts/extract_imitation_shards.py`.
+2. Jointly train the Actor and Sidecar with `scripts/train_spatial_risk_sidecar.py`.
+3. Continue with low-learning-rate KL-APPO using `conf/conv_sidecar_appo_vtrace.yaml` and a frozen reference policy.
+
+The BC trainer writes live CSV/JSONL metrics, rejects non-finite losses and gradients, filters
+expert actions that are illegal under the reconstructed action mask, and saves periodic recovery
+checkpoints. Local replay shards and model checkpoints remain excluded from Git.
+
 ## Notes
 
 - The safest tournament fallback remains the base agent without the gate.

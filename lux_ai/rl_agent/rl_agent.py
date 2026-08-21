@@ -14,6 +14,7 @@ from typing import *
 import yaml
 
 from . import data_augmentation
+from .gate_policy import RuntimeGatePolicy
 from ..lux_gym import create_reward_space, LuxEnv, wrappers
 from ..lux_gym.act_spaces import ACTION_MEANINGS
 from ..utils import DEBUG_MESSAGE, RUNTIME_DEBUG_MESSAGE, LOCAL_EVAL
@@ -119,6 +120,7 @@ class RLAgent:
         # Various utility properties
         self.me = self.game_state.players[obs.player]
         self.opp = self.game_state.players[(obs.player + 1) % 2]
+        self.runtime_gate_policy = RuntimeGatePolicy(self.agent_flags)
         self.my_city_tile_mat = np.zeros(MAX_BOARD_SIZE, dtype=bool)
         # NB: loc = pos[0] * n_cols + pos[1]
         self.loc_to_actionable_city_tiles = {}
@@ -127,6 +129,34 @@ class RLAgent:
 
         # Logging
         self.stopwatch = Stopwatch()
+
+    def city_fuel_turns(self, city) -> float:
+        return self.runtime_gate_policy.city_fuel_turns(city)
+
+    def city_fuel_buffer_summary(self) -> Dict[str, float]:
+        return self.runtime_gate_policy.city_fuel_buffer_summary(self.me)
+
+    def runtime_gate_active(self) -> bool:
+        return self.runtime_gate_policy.active(self.game_state)
+
+    def large_map_gate_strict(self, buffer: Dict[str, float]) -> bool:
+        return self.runtime_gate_policy.large_map_gate_strict(self.game_state, buffer)
+
+    def should_gate_build_worker(self, city_tile: CityTile, buffer: Dict[str, float]) -> bool:
+        return self.runtime_gate_policy.should_gate_build_worker(
+            self.game_state,
+            self.me,
+            city_tile,
+            buffer,
+        )
+
+    def should_gate_build_city(self, unit: Unit, buffer: Dict[str, float]) -> bool:
+        return self.runtime_gate_policy.should_gate_build_city(
+            self.game_state,
+            self.me,
+            unit,
+            buffer,
+        )
 
     def load_strategy_scorers(self) -> Dict[str, Any]:
         if not getattr(self.agent_flags, "runtime_scorer_gate_enabled", False):
@@ -144,24 +174,6 @@ class RLAgent:
         except Exception as exc:
             DEBUG_MESSAGE(f"Runtime scorer gate disabled; failed to load scorers: {exc}")
             return {}
-
-    def city_fuel_turns(self, city) -> float:
-        upkeep = max(float(city.get_light_upkeep()), 1e-6)
-        return float(city.fuel) / upkeep
-
-    def city_fuel_buffer_summary(self) -> Dict[str, float]:
-        fuel_turns = [self.city_fuel_turns(city) for city in self.me.cities.values()]
-        if len(fuel_turns) == 0:
-            return {"min": 0.0, "p25": 0.0, "median": 0.0, "mean": 0.0, "total": 0.0}
-        total_fuel = sum(float(city.fuel) for city in self.me.cities.values())
-        total_upkeep = max(sum(float(city.get_light_upkeep()) for city in self.me.cities.values()), 1e-6)
-        return {
-            "min": float(min(fuel_turns)),
-            "p25": float(np.percentile(fuel_turns, 25)),
-            "median": float(np.median(fuel_turns)),
-            "mean": float(np.mean(fuel_turns)),
-            "total": float(total_fuel / total_upkeep),
-        }
 
     def strategy_scorer_gate_active(self) -> bool:
         if not self.strategy_scorers:
@@ -448,18 +460,23 @@ class RLAgent:
         # First handle city tile actions, ensuring the unit cap and research cap is not exceeded
         units_to_build = max(self.me.city_tile_count - len(self.me.units), 0)
         research_remaining = max(MAX_RESEARCH - self.me.research_points, 0)
+        fuel_buffer = self.city_fuel_buffer_summary()
         strategy_scores = self.strategy_risk_scores()
         for loc in city_tile_priorities:
             loc = loc.item()
             actions = my_flat_actions["city_tile"][loc]
-            if self.loc_to_actionable_city_tiles.get(loc, None) is not None:
+            city_tile = self.loc_to_actionable_city_tiles.get(loc, None)
+            if city_tile is not None:
                 for i, act in enumerate(actions):
                     illegal_action = False
                     action_meaning = ACTION_MEANINGS["city_tile"][act]
                     # Check that it is allowed to build carts
                     if action_meaning == "BUILD_CART" and not self.agent_flags.can_build_carts:
                         illegal_action = True
-                    elif self.should_gate_scorer_action(action_meaning, strategy_scores):
+                    elif (
+                            action_meaning == "BUILD_WORKER"
+                            and self.should_gate_build_worker(city_tile, fuel_buffer)
+                    ) or self.should_gate_scorer_action(action_meaning, strategy_scores):
                         illegal_action = True
                     # Check that the city will not build more units than the unit cap
                     elif action_meaning.startswith("BUILD_"):
@@ -518,18 +535,25 @@ class RLAgent:
                 for i, act in enumerate(actions):
                     illegal_action = False
                     action_meaning = ACTION_MEANINGS[unit_type][act]
+                    unit = actionable_list[acted_count]
                     if self.should_gate_scorer_action(action_meaning, strategy_scores):
                         illegal_action = True
-                        new_pos = actionable_list[acted_count].pos
+                        new_pos = unit.pos
                     elif action_meaning.startswith("MOVE_"):
                         direction = action_meaning.split("_")[1]
-                        new_pos = actionable_list[acted_count].pos.translate(direction, 1)
+                        new_pos = unit.pos.translate(direction, 1)
                     else:
-                        new_pos = actionable_list[acted_count].pos
+                        new_pos = unit.pos
 
                     if not illegal_action:
-                        # Check that the new position is a legal square
                         if (
+                                unit_type == "worker"
+                                and action_meaning == "BUILD_CITY"
+                                and self.should_gate_build_city(unit, fuel_buffer)
+                        ):
+                            illegal_action = True
+                        # Check that the new position is a legal square
+                        elif (
                                 new_pos.x < 0 or new_pos.x >= self.game_state.map_width or
                                 new_pos.y < 0 or new_pos.y >= self.game_state.map_height
                         ):

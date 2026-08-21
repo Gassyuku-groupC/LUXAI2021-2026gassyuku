@@ -1,0 +1,39 @@
+defaults:
+  - conv_teacher_bc_dagger_v20_win_scale_gate
+  - _self_
+
+name: conv_sidecar_bc_stage
+group: sidecar_bc_to_appo
+reward_space: LogScaleOutcomeReward
+reward_space_kwargs:
+  outcome_weight: 0.80
+  city_weight: 0.12
+  unit_weight: 0.08
+
+spatial_risk_sidecar_enabled: true
+spatial_risk_attention_dim: 64
+spatial_risk_num_heads: 4
+spatial_risk_pool_size: 8
+sidecar_gate_hidden_channels: 16
+gate_only_training: false
+sidecar_freeze_base_agent: false
+risk_gate_enabled: false
+spatial_risk_sidecar_checkpoint: null
+
+# Student starts from first; best_agent is never loaded into the student.
+load_dir: D:/Luxai/Kaggle_Lux_AI_2021/internal_testing/hall_of_fame/11-24_12-56-23_062179520_must_research/lux_ai/rl_agent
+checkpoint_file: 062179520_weights.pt
+weights_only: true
+
+algo: appo_vtrace
+ppo_clip_ratio: 0.20
+use_teacher: true
+teacher_load_dir: D:/Luxai/Kaggle_Lux_AI_2021/outputs/submission_packages/best_agent/lux_ai/rl_agent
+teacher_checkpoint_file: candidate_weights.pt
+reference_policy_kl_cost: 0.002
+teacher_baseline_cost: 0.0
+teacher_bc_cost_start: 1.0
+teacher_bc_cost_end: 1.0
+teacher_bc_anneal_games: 1
+rl_policy_cost: 0.0
+total_games: 5

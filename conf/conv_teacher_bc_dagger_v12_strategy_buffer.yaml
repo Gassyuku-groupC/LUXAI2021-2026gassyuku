@@ -1,0 +1,36 @@
+defaults:
+  - conv_teacher_bc_dagger_v10_shadow
+  - _self_
+
+name: conv_teacher_bc_dagger_v12_strategy_buffer
+group: local_teacher_bc_dagger_v12_strategy_buffer
+
+reward_space_kwargs:
+  # Strategy-feature shaping from top1/top2 replay analysis.
+  # After turn 120, do not keep rewarding raw research progress as strongly:
+  # the target behavior is to convert the research lead into fuel safety.
+  research_late_scale: 0.10
+  small_map_research: 0.0
+
+  strategy_buffer_start_turn: 120
+  strategy_buffer_mid_turn: 160
+  strategy_buffer_late_turn: 240
+  min_buffer_target_early: 8.0
+  min_buffer_target_mid: 10.0
+  p25_buffer_target_mid: 15.0
+  p25_buffer_target_late: 20.0
+
+  strategy_min_buffer: 0.70
+  strategy_p25_buffer: 0.50
+
+  # Penalize expansion that sharply reduces total fuel turns.
+  buffer_drop_with_growth: 16.0
+  buffer_growth_drop_threshold: 3.0
+  buffer_growth_drop_clip: 15.0
+
+total_games: 16
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v12_strategy_buffer/${now:%Y-%m-%d_%H-%M-%S}

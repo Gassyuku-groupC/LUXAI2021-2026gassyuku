@@ -64,7 +64,8 @@ class ConvEmbeddingInputLayer(nn.Module):
             sum_player_embeddings: bool = True,
             use_index_select: bool = True,
             activation: Callable = nn.LeakyReLU,
-            obs_space_prefix: str = ""
+            obs_space_prefix: str = "",
+            feature_embedding_dims: Optional[Dict[str, int]] = None,
     ):
         super(ConvEmbeddingInputLayer, self).__init__()
 
@@ -73,6 +74,7 @@ class ConvEmbeddingInputLayer(nn.Module):
         n_embedding_channels = 0
         self.keys_to_op = {}
         self.obs_space_prefix = obs_space_prefix
+        feature_embedding_dims = feature_embedding_dims or {}
         for orig_key, val in obs_space.spaces.items():
             assert val.shape[0] == 1
             # Used when performing inference with multiple models with different obs spaces on a single MultiObs env
@@ -104,11 +106,14 @@ class ConvEmbeddingInputLayer(nn.Module):
                     raise NotImplementedError(f"Got gym space: {type(val)}")
                 n_players = val.shape[1]
                 n_embeddings = n_players * (n_embeddings - 1) + 1
-                embeddings[key] = nn.Embedding(n_embeddings, embedding_dim, padding_idx=padding_idx)
+                feature_dim = int(feature_embedding_dims.get(key, embedding_dim))
+                if feature_dim < 1:
+                    raise ValueError(f"Embedding dimension for {key} must be positive, got {feature_dim}")
+                embeddings[key] = nn.Embedding(n_embeddings, feature_dim, padding_idx=padding_idx)
                 if sum_player_embeddings:
-                    n_embedding_channels += embedding_dim
+                    n_embedding_channels += feature_dim
                 else:
-                    n_embedding_channels += embedding_dim * n_players
+                    n_embedding_channels += feature_dim * n_players
                 self.keys_to_op[key] = "embedding"
             elif isinstance(val, gym.spaces.Box):
                 n_continuous_channels += np.prod(val.shape[:2])

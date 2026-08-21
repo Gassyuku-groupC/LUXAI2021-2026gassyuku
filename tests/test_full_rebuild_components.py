@@ -1,0 +1,70 @@
+from types import SimpleNamespace
+import unittest
+
+import torch
+
+from lux_ai.lux_gym.act_spaces import ACTION_MEANINGS, ACTION_MEANINGS_TO_IDX
+from lux_ai.lux_gym.reward_spaces import LogScaleOutcomeReward
+from lux_ai.rl_agent.learned_intervention_gate import SidecarLogitDeltaGate
+from lux_ai.rl_agent.sidecar_agent_wrapper import SidecarAgentWrapper
+from lux_ai.torchbeast.monobeast import compute_appo_policy_loss, compute_teacher_kl_loss
+from lux_ai.torchbeast.pfsp import LeagueOpponent, PFSPOpponentSampler
+
+
+class FullRebuildComponentsTest(unittest.TestCase):
+    def make_logits(self):
+        result = {}
+        for space, meanings in ACTION_MEANINGS.items():
+            result[space] = torch.zeros(1, 4, 2, 8, 8, len(meanings))
+        result["worker"][..., 0] = float("-inf")
+        return result
+
+    def test_map_phase_rules(self):
+        self.assertFalse(SidecarAgentWrapper.map_phase_active(12, 119, 0))
+        self.assertTrue(SidecarAgentWrapper.map_phase_active(12, 145, 0))
+        self.assertFalse(SidecarAgentWrapper.map_phase_active(16, 150, 1))
+        self.assertFalse(SidecarAgentWrapper.map_phase_active(24, 79, 0))
+        self.assertTrue(SidecarAgentWrapper.map_phase_active(24, 79, 1))
+        self.assertTrue(SidecarAgentWrapper.map_phase_active(32, 0, 0))
+
+    def test_safe_expansion_whitelist_and_soft_bias(self):
+        gate = SidecarLogitDeltaGate()
+        logits = self.make_logits()
+        risk = torch.full((1, 2, 8, 8), 4.0)
+        unsafe = torch.full_like(risk, -4.0)
+        final, _ = gate(logits, risk, unsafe, risk_threshold=0.85, logit_bias_lambda=4.0)
+        build_city = ACTION_MEANINGS_TO_IDX["worker"]["BUILD_CITY"]
+        self.assertTrue((final["worker"][..., build_city] < 0).all())
+        self.assertTrue(torch.equal(torch.isfinite(logits["worker"]), torch.isfinite(final["worker"])))
+
+        safe = torch.full_like(risk, 4.0)
+        whitelisted, _ = gate(logits, risk, safe, risk_threshold=0.85)
+        self.assertTrue(torch.equal(logits["worker"], whitelisted["worker"]))
+
+    def test_appo_clipping_and_reference_kl(self):
+        target = torch.tensor([[[torch.log(torch.tensor(2.0))]]])
+        behavior = torch.zeros_like(target)
+        advantage = torch.ones_like(target)
+        loss, clip_fraction, _ = compute_appo_policy_loss(target, behavior, advantage, 0.2, "mean")
+        self.assertAlmostEqual(loss.item(), -1.2, places=6)
+        self.assertEqual(clip_fraction.item(), 1.0)
+        logits = torch.tensor([[[[[[1.0, -1.0]]]]]])
+        mask = torch.ones(logits.shape[:-1], dtype=torch.bool)
+        self.assertAlmostEqual(compute_teacher_kl_loss(logits, logits, mask).item(), 0.0, places=6)
+
+    def test_pfsp_prioritizes_hard_and_night_loss(self):
+        easy = LeagueOpponent("easy", "easy.py", games=20, wins=18)
+        hard = LeagueOpponent("hard", "hard.py", games=20, wins=4, night_loss_mean=2.0)
+        weights = PFSPOpponentSampler([easy, hard]).weights()
+        self.assertGreater(weights[1], weights[0])
+
+    def test_log_reward_is_finite_at_zero(self):
+        reward = LogScaleOutcomeReward()
+        players = [SimpleNamespace(city_tile_count=0, units=[]), SimpleNamespace(city_tile_count=0, units=[])]
+        game = SimpleNamespace(players=players)
+        values = reward.compute_rewards(game, False)
+        self.assertTrue(all(torch.isfinite(torch.tensor(value)) for value in values))
+
+
+if __name__ == "__main__":
+    unittest.main()

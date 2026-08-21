@@ -1,0 +1,18 @@
+defaults:
+  - conv_teacher_bc_dagger_v4_16x16
+  - _self_
+
+name: conv_teacher_bc_dagger_v5_16x16
+
+reward_space_kwargs:
+  midgame_start_turn: 70
+  midgame_end_turn: 160
+  midgame_ramp_turns: 10
+  midgame_buffer_health: 1.0
+
+normalize_policy_advantages: true
+policy_advantage_clip: 5.0
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v5_16x16/${now:%Y-%m-%d_%H-%M-%S}

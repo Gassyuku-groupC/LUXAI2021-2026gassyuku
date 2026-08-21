@@ -78,6 +78,11 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags.setdefault("teacher_bc_city_tile_weight", 1.0)
     flags.setdefault("teacher_bc_cart_weight", 1.0)
     flags.setdefault("rl_policy_cost", 1.0)
+    flags.setdefault("algo", "impala")
+    flags.setdefault("ppo_clip_ratio", 0.2)
+    flags.setdefault("reference_policy_kl_cost", flags.get("teacher_kl_cost", 0.0))
+    # Backward-compatible alias. New configs should use reference_policy_kl_cost.
+    flags["teacher_kl_cost"] = flags["reference_policy_kl_cost"]
     flags.setdefault("normalize_policy_advantages", False)
     flags.setdefault("policy_advantage_clip", None)
     flags.setdefault("normalize_actor_critic_losses", False)
@@ -92,6 +97,9 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags.setdefault("aux_risk_dropout", 0.10)
     flags.setdefault("aux_risk_pos_weight_scale", 1.0)
     flags.setdefault("aux_risk_threshold", 0.40)
+    flags.setdefault("spatial_risk_sidecar_checkpoint", None)
+    flags.setdefault("student_pretrain_checkpoint", None)
+    flags.setdefault("sidecar_freeze_base_agent", True)
 
     # Model params
     flags.setdefault("use_index_select", True)

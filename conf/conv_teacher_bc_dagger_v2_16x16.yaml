@@ -1,0 +1,30 @@
+defaults:
+  - conv_teacher_bc_dagger_16x16
+  - _self_
+
+name: conv_teacher_bc_dagger_v2_16x16
+
+reward_space_kwargs:
+  pre_night_window: 30
+  min_buffer_nights: 2.0
+  city_gain: 0.8
+  city_loss: 12.0
+  buffer_deficit: 0.18
+  unsafe_expansion: 12.0
+
+# Keep the first-place policy influential while RL explores learner states.
+teacher_bc_cost_start: 20.0
+teacher_bc_cost_end: 2.0
+teacher_bc_anneal_games: 1000
+teacher_bc_game_offset: 0
+teacher_bc_worker_weight: 2.0
+teacher_bc_city_tile_weight: 3.0
+teacher_bc_cart_weight: 0.5
+rl_policy_cost: 0.1
+
+total_games: 25
+total_steps: 20000
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v2_16x16/${now:%Y-%m-%d_%H-%M-%S}

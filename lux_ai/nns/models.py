@@ -190,7 +190,12 @@ class BasicActorCriticNetwork(nn.Module):
             actor_critic_activation: Callable = nn.ReLU,
             n_action_value_layers: int = 2,
             n_value_heads: int = 1,
-            rescale_value_input: bool = True
+            rescale_value_input: bool = True,
+            learned_intervention_gate_enabled: bool = False,
+            learned_intervention_gate_hidden_channels: int = 32,
+            learned_intervention_gate_initial_probability: float = 1e-3,
+            learned_intervention_gate_hard_threshold: float = 0.80,
+            learned_intervention_gate_temperature: float = 1.0,
     ):
         super(BasicActorCriticNetwork, self).__init__()
         self.dict_input_layer = DictInputLayer()
@@ -236,29 +241,55 @@ class BasicActorCriticNetwork(nn.Module):
             n_value_heads=n_value_heads,
             rescale_input=rescale_value_input
         )
+        self.learned_intervention_gate = None
+        if learned_intervention_gate_enabled:
+            from ..rl_agent.learned_intervention_gate import LearnedInterventionGate
+            self.learned_intervention_gate = LearnedInterventionGate(
+                in_channels=self.base_out_channels,
+                hidden_channels=learned_intervention_gate_hidden_channels,
+                initial_probability=learned_intervention_gate_initial_probability,
+                hard_threshold=learned_intervention_gate_hard_threshold,
+                temperature=learned_intervention_gate_temperature,
+            )
 
     def forward(
             self,
             x: Dict[str, Union[dict, torch.Tensor]],
             sample: bool = True,
+            return_features: bool = False,
             **actor_kwargs
     ) -> Dict[str, Any]:
         x, input_mask, available_actions_mask, subtask_embeddings = self.dict_input_layer(x)
         base_out, input_mask = self.base_model((x, input_mask))
         if subtask_embeddings is not None:
             subtask_embeddings = torch.repeat_interleave(subtask_embeddings, 2, dim=0)
+        actor_features = self.actor_base(base_out)
         policy_logits, actions = self.actor(
-            self.actor_base(base_out),
+            actor_features,
             available_actions_mask=available_actions_mask,
             sample=sample,
             **actor_kwargs
         )
+        gate_probabilities = None
+        if self.learned_intervention_gate is not None:
+            policy_logits, actions, gate_probabilities = self.learned_intervention_gate(
+                actor_features,
+                policy_logits,
+                sample=sample,
+                actions_per_square=actor_kwargs.get("actions_per_square", MAX_OVERLAPPING_ACTIONS),
+            )
         baseline = self.baseline(self.baseline_base(base_out), input_mask, subtask_embeddings)
-        return dict(
+        outputs = dict(
             actions=actions,
             policy_logits=policy_logits,
             baseline=baseline
         )
+        if return_features:
+            outputs["base_features"] = base_out
+            outputs["feature_input_mask"] = input_mask
+            if gate_probabilities is not None:
+                outputs["gate_probabilities"] = gate_probabilities
+        return outputs
 
     def sample_actions(self, *args, **kwargs):
         return self.forward(*args, sample=True, **kwargs)

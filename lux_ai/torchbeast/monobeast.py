@@ -17,6 +17,7 @@ from omegaconf import OmegaConf
 import os
 from pathlib import Path
 import pprint
+from queue import Empty
 import threading
 import time
 import timeit
@@ -27,7 +28,6 @@ import wandb
 import warnings
 
 import torch
-from torch.cuda import amp
 from torch import multiprocessing as mp
 from torch import nn
 from torch.nn import functional as F
@@ -38,6 +38,9 @@ from .core.buffer_utils import Buffers, create_buffers, fill_buffers_inplace, st
 from ..lux_gym import create_env
 from ..lux_gym.act_spaces import ACTION_MEANINGS
 from ..nns import create_model
+from ..rl_agent.auxiliary_heads import AuxiliaryRiskHead
+from ..rl_agent.data_augmentation import HorizontalFlip, Rot90, Rot180, Rot270, VerticalFlip
+from ..rl_agent.gate_policy import apply_runtime_gate_to_actor_output
 from ..utils import flags_to_namespace
 
 
@@ -48,6 +51,166 @@ logging.basicConfig(
     ),
     level=0,
 )
+
+
+TRAINING_AUGMENTERS = (HorizontalFlip, VerticalFlip, Rot90, Rot180, Rot270)
+
+
+def load_training_model_state(model: nn.Module, state_dict: Dict, flags: SimpleNamespace) -> None:
+    """Load a legacy actor checkpoint while allowing a newly added gate head."""
+    if getattr(flags, "spatial_risk_sidecar_enabled", False):
+        if any(key.startswith("base_agent.") for key in state_dict):
+            model.load_state_dict(state_dict, strict=True)
+            return
+        incompatible = model.base_agent.load_state_dict(state_dict, strict=True)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            raise RuntimeError(f"Incompatible frozen base checkpoint: {incompatible}")
+        logging.info("Initialized external spatial sidecar on an unchanged legacy actor.")
+    elif getattr(flags, "learned_intervention_gate_enabled", False):
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        unexpected = list(incompatible.unexpected_keys)
+        invalid_missing = [
+            key for key in incompatible.missing_keys
+            if not key.startswith("learned_intervention_gate.")
+        ]
+        if unexpected or invalid_missing:
+            raise RuntimeError(
+                "Incompatible learned-gate checkpoint. "
+                f"missing={invalid_missing}, unexpected={unexpected}"
+            )
+        if incompatible.missing_keys:
+            logging.info("Initialized a new learned intervention gate on top of the loaded actor.")
+    else:
+        model.load_state_dict(state_dict)
+
+
+def configure_gate_only_training(model: nn.Module, training: bool) -> None:
+    """Freeze the complete base policy and expose only the intervention gate."""
+    if hasattr(model, "spatial_risk_sidecar") and hasattr(model, "intervention_gate"):
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for module in (model.spatial_risk_sidecar, model.intervention_gate):
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
+            module.train(training)
+        model.base_agent.eval()
+        return
+    gate = getattr(model, "learned_intervention_gate", None)
+    if gate is None:
+        raise ValueError("gate_only_training requires learned_intervention_gate_enabled=true.")
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    for parameter in gate.parameters():
+        parameter.requires_grad_(True)
+    model.eval()
+    gate.train(training)
+
+
+def load_spatial_sidecar_pretrain(model: nn.Module, path: Optional[str]) -> None:
+    if not path:
+        return
+    if not hasattr(model, "spatial_risk_sidecar"):
+        raise ValueError("spatial_risk_sidecar_checkpoint requires spatial_risk_sidecar_enabled=true")
+    checkpoint = torch.load(Path(path), map_location="cpu")
+    model.spatial_risk_sidecar.load_state_dict(
+        checkpoint["spatial_risk_sidecar_state_dict"], strict=True
+    )
+    if checkpoint.get("intervention_gate_state_dict") is not None:
+        model.intervention_gate.load_state_dict(
+            checkpoint["intervention_gate_state_dict"], strict=True
+        )
+
+
+def load_student_pretrain(model: nn.Module, path: Optional[str]) -> None:
+    """Restore the complete Actor+Sidecar BC student before online APPO."""
+    if not path:
+        return
+    checkpoint = torch.load(Path(path), map_location="cpu")
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    model.load_state_dict(state_dict, strict=True)
+    logging.info("Loaded joint Actor+Sidecar student pretrain from %s", path)
+
+
+def format_actor_status(actor_processes) -> str:
+    statuses = []
+    for idx, actor in enumerate(actor_processes or []):
+        exit_code = getattr(actor, "exitcode", "n/a")
+        statuses.append(f"{idx}:alive={actor.is_alive()},exit={exit_code}")
+    return ", ".join(statuses) or "unavailable"
+
+
+def augment_training_batch(batch: Dict, flags: SimpleNamespace) -> Dict:
+    """Apply one consistent board symmetry and optional player swap per rollout batch."""
+    if flags.training_spatial_augmentation:
+        augmenter = TRAINING_AUGMENTERS[
+            torch.randint(len(TRAINING_AUGMENTERS), (1,)).item()
+        ]()
+        for value in batch["obs"].values():
+            if value.dim() == 6:
+                value.copy_(augmenter.op(value, inverse=False, is_policy=False))
+        batch["info"]["input_mask"].copy_(
+            augmenter.op(batch["info"]["input_mask"], inverse=False, is_policy=False)
+        )
+        for space in batch["actions"]:
+            for container, key in (
+                (batch["policy_logits"], space),
+                (batch["info"]["available_actions_mask"], space),
+                (batch["info"]["actions_taken"], space),
+            ):
+                transformed = augmenter.op(container[key], inverse=False, is_policy=True)
+                container[key].copy_(augmenter._transform_policy({space: transformed}, inverse=False)[space])
+
+            actions = augmenter.op(batch["actions"][space], inverse=False, is_policy=True)
+            policy_permutation = augmenter.transformed_action_idxs_forward[space]
+            inverse_permutation = torch.empty(
+                len(policy_permutation), dtype=torch.long, device=actions.device
+            )
+            inverse_permutation[torch.tensor(policy_permutation, device=actions.device)] = torch.arange(
+                len(policy_permutation), device=actions.device
+            )
+            batch["actions"][space].copy_(inverse_permutation[actions])
+
+    def maybe_swap_players(value: torch.Tensor, player_dim: int) -> torch.Tensor:
+        if not flags.training_player_swap_per_sample:
+            return value.flip(player_dim).clone()
+        if not player_swap_mask.any():
+            return value.clone()
+        mask_shape = [1] * value.dim()
+        mask_shape[1] = player_swap_mask.shape[0]
+        mask = player_swap_mask.to(value.device).view(mask_shape)
+        swapped = value.flip(player_dim).clone()
+        return torch.where(mask, swapped, value).clone()
+
+    player_swap_mask = None
+    if flags.training_player_swap_per_sample:
+        batch_size = next(iter(batch["actions"].values())).shape[1]
+        player_swap_mask = (
+            torch.rand(batch_size, device=next(iter(batch["actions"].values())).device)
+            < flags.training_player_swap_probability
+        )
+    if (
+        flags.training_player_swap_per_sample
+        or torch.rand(()).item() < flags.training_player_swap_probability
+    ):
+        for value in batch["obs"].values():
+            if value.dim() == 6 and value.shape[-3] == 2:
+                value.copy_(maybe_swap_players(value, -3))
+            elif value.dim() < 6 and value.shape[-1] == 2:
+                value.copy_(maybe_swap_players(value, -1))
+        for group_name in ("actions", "policy_logits"):
+            for value in batch[group_name].values():
+                value.copy_(maybe_swap_players(value, -4))
+        for group_name in ("available_actions_mask", "actions_taken"):
+            for value in batch["info"][group_name].values():
+                value.copy_(maybe_swap_players(value, -4))
+        input_mask = batch["info"]["input_mask"]
+        input_mask.copy_(maybe_swap_players(input_mask, -3))
+        for key in ("reward", "baseline"):
+            batch[key].copy_(maybe_swap_players(batch[key], -1))
+        for key, value in batch["info"].items():
+            if key.startswith("LOGGING_") and value.shape[-1:] == (2,):
+                value.copy_(maybe_swap_players(value, -1))
+    return batch
 
 
 def combine_policy_logits_to_log_probs(
@@ -95,6 +258,17 @@ def combine_policy_logits_to_log_probs(
     return torch.flatten(log_probs, start_dim=-3, end_dim=-1).sum(dim=-1).squeeze(dim=-2)
 
 
+def count_effective_actions(actions_taken_by_space: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Count actions for each time, batch, and player without map-size bias."""
+    counts = None
+    for mask in actions_taken_by_space.values():
+        space_counts = mask.sum(dim=(2, 4, 5, 6))
+        counts = space_counts if counts is None else counts + space_counts
+    if counts is None:
+        raise ValueError("At least one action space is required")
+    return counts
+
+
 def combine_policy_entropy(
         policy_logits: torch.Tensor,
         actions_taken_mask: torch.Tensor
@@ -126,19 +300,47 @@ def compute_teacher_kl_loss(
         teacher_policy_logits: torch.Tensor,
         actions_taken_mask: torch.Tensor
 ) -> torch.Tensor:
-    learner_policy_log_probs = F.log_softmax(learner_policy_logits, dim=-1)
-    teacher_policy = F.softmax(teacher_policy_logits, dim=-1)
-    kl_div = F.kl_div(
-        learner_policy_log_probs,
-        teacher_policy.detach(),
-        reduction="none",
-        log_target=False
+    common_legal = torch.isfinite(learner_policy_logits) & torch.isfinite(teacher_policy_logits)
+    learner_safe_logits = torch.where(
+        common_legal, learner_policy_logits, torch.full_like(learner_policy_logits, -1e4)
+    )
+    teacher_safe_logits = torch.where(
+        common_legal, teacher_policy_logits.detach(), torch.full_like(teacher_policy_logits, -1e4)
+    )
+    learner_policy_log_probs = F.log_softmax(learner_safe_logits, dim=-1)
+    learner_policy = learner_policy_log_probs.exp()
+    teacher_policy_log_probs = F.log_softmax(teacher_safe_logits, dim=-1)
+    # KL(pi_theta || pi_ref), matching the immutable-reference constraint.
+    kl_div = (
+        learner_policy * (learner_policy_log_probs - teacher_policy_log_probs)
     ).sum(dim=-1)
     kl_div = torch.nan_to_num(kl_div, nan=0., posinf=0., neginf=0.)
     assert actions_taken_mask.shape == kl_div.shape
     kl_div_masked = kl_div * actions_taken_mask.float()
     # Sum over y, x, and action_planes dimensions to combine kl divergences from different actions
     return kl_div_masked.sum(dim=-1).sum(dim=-1).squeeze(dim=-2)
+
+
+def compute_teacher_bc_loss(
+        learner_policy_logits: torch.Tensor,
+        teacher_policy_logits: torch.Tensor,
+        actions_taken_mask: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Hard behavior cloning from the teacher on learner-visited states."""
+    teacher_actions = teacher_policy_logits.detach().argmax(dim=-1)
+    n_actions = learner_policy_logits.shape[-1]
+    cross_entropy = F.cross_entropy(
+        learner_policy_logits.reshape(-1, n_actions),
+        teacher_actions.reshape(-1),
+        reduction="none",
+    ).view_as(teacher_actions)
+    cross_entropy = torch.nan_to_num(cross_entropy, nan=0., posinf=0., neginf=0.)
+    mask = actions_taken_mask.float()
+    masked_loss = cross_entropy * mask
+    combined_loss = masked_loss.sum(dim=-1).sum(dim=-1).squeeze(dim=-2)
+    correct = ((learner_policy_logits.argmax(dim=-1) == teacher_actions) * actions_taken_mask).sum()
+    count = actions_taken_mask.sum()
+    return combined_loss, correct, count
 
 
 def reduce(losses: torch.Tensor, reduction: str) -> torch.Tensor:
@@ -155,6 +357,40 @@ def compute_baseline_loss(values: torch.Tensor, value_targets: torch.Tensor, red
     return reduce(baseline_loss, reduction=reduction)
 
 
+def count_city_tiles(obs_city_tile: torch.Tensor) -> torch.Tensor:
+    counts = obs_city_tile.float().sum(dim=(-1, -2))
+    if counts.dim() >= 3 and counts.shape[-2] == 1 and counts.shape[-1] == 2:
+        counts = counts.squeeze(-2)
+    elif counts.dim() >= 3 and counts.shape[-1] == 1 and counts.shape[-2] == 2:
+        counts = counts.squeeze(-1)
+    if counts.shape[-1] != 2:
+        raise RuntimeError(f"Expected a final player dimension of 2 for city_tile counts. Found: {counts.shape}")
+    return counts
+
+
+def make_city_loss_labels(city_counts: torch.Tensor, horizon: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    seq_len = city_counts.shape[0]
+    labels = torch.zeros_like(city_counts, dtype=torch.float32)
+    valid = torch.zeros_like(city_counts, dtype=torch.bool)
+    for t in range(seq_len - 1):
+        end = min(seq_len, t + int(horizon) + 1)
+        future_min = city_counts[t + 1:end].min(dim=0).values
+        labels[t] = (future_min < city_counts[t]).float()
+        valid[t] = city_counts[t] > 0
+    return labels, valid
+
+
+def balanced_bce_with_logits(logits: torch.Tensor, labels: torch.Tensor, valid: torch.Tensor, pos_weight_scale: float) -> torch.Tensor:
+    logits = logits[valid]
+    labels = labels[valid]
+    if labels.numel() == 0:
+        return logits.sum() * 0.0
+    positives = labels.sum().clamp(min=1.0)
+    negatives = (labels.numel() - labels.sum()).clamp(min=1.0)
+    pos_weight = (negatives / positives * float(pos_weight_scale)).clamp(min=1.0, max=20.0)
+    return F.binary_cross_entropy_with_logits(logits, labels, pos_weight=pos_weight)
+
+
 def compute_policy_gradient_loss(
         action_log_probs: torch.Tensor,
         advantages: torch.Tensor,
@@ -162,6 +398,40 @@ def compute_policy_gradient_loss(
 ) -> torch.Tensor:
     cross_entropy = -action_log_probs.view_as(advantages)
     return reduce(cross_entropy * advantages.detach(), reduction)
+
+
+def compute_appo_policy_loss(
+        target_action_log_probs: torch.Tensor,
+        behavior_action_log_probs: torch.Tensor,
+        advantages: torch.Tensor,
+        clip_ratio: float,
+        reduction: str,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """PPO clipped surrogate over asynchronous behavior-policy rollouts."""
+    log_ratio = (target_action_log_probs - behavior_action_log_probs).clamp(-20.0, 20.0)
+    ratio = log_ratio.exp()
+    clipped_ratio = ratio.clamp(1.0 - float(clip_ratio), 1.0 + float(clip_ratio))
+    detached_advantages = advantages.detach()
+    surrogate = torch.minimum(ratio * detached_advantages, clipped_ratio * detached_advantages)
+    clip_fraction = (ratio != clipped_ratio).float().mean()
+    approximate_kl = ((ratio - 1.0) - log_ratio).mean()
+    return -reduce(surrogate, reduction), clip_fraction, approximate_kl
+
+
+def stabilize_policy_advantages(
+        advantages: torch.Tensor,
+        normalize: bool,
+        clip: Optional[float],
+) -> torch.Tensor:
+    advantages = torch.nan_to_num(advantages, nan=0., posinf=0., neginf=0.)
+    if normalize:
+        advantages = (
+            (advantages - advantages.mean())
+            / advantages.std(unbiased=False).clamp(min=1e-6)
+        )
+    if clip is not None:
+        advantages = advantages.clamp(min=-clip, max=clip)
+    return advantages
 
 
 @torch.no_grad()
@@ -189,6 +459,7 @@ def act(
             env.seed()
         env_output = env.reset(force=True)
         agent_output = actor_model(env_output)
+        agent_output = apply_runtime_gate_to_actor_output(agent_output, env, flags)
         while True:
             index = free_queue.get()
             if index is None:
@@ -202,6 +473,7 @@ def act(
                 timings.reset()
 
                 agent_output = actor_model(env_output)
+                agent_output = apply_runtime_gate_to_actor_output(agent_output, env, flags)
                 timings.time("model")
 
                 env_output = env.step(agent_output["actions"])
@@ -243,11 +515,22 @@ def get_batch(
     full_queue: mp.SimpleQueue,
     buffers: Buffers,
     timings: prof.Timings,
+    actor_processes=None,
     lock=threading.Lock(),
 ):
     with lock:
         timings.time("lock")
-        indices = [full_queue.get() for _ in range(max(flags.batch_size // flags.n_actor_envs, 1))]
+        indices = []
+        for _ in range(max(flags.batch_size // flags.n_actor_envs, 1)):
+            try:
+                indices.append(full_queue.get(timeout=flags.rollout_queue_timeout_seconds))
+            except Empty as exc:
+                raise RuntimeError(
+                    "Timed out waiting for an actor rollout after "
+                    f"{flags.rollout_queue_timeout_seconds} seconds. "
+                    "This usually means an actor crashed or the Lux environment stalled. "
+                    f"Actors: {format_actor_status(actor_processes)}"
+                ) from exc
         timings.time("dequeue")
     batch = stack_buffers([buffers[m] for m in indices], dim=1)
     timings.time("batch")
@@ -264,9 +547,10 @@ def learn(
         actor_model: nn.Module,
         learner_model: nn.Module,
         teacher_model: Optional[nn.Module],
+        aux_risk_head: Optional[nn.Module],
         batch: Dict[str, torch.Tensor],
         optimizer: torch.optim.Optimizer,
-        grad_scaler: amp.grad_scaler,
+        grad_scaler: torch.amp.GradScaler,
         lr_scheduler: torch.optim.lr_scheduler,
         total_games_played: int,
         baseline_only: bool = False,
@@ -274,9 +558,54 @@ def learn(
 ) -> Tuple[Dict, int]:
     """Performs a learning (optimization) step."""
     with lock:
-        with amp.autocast(enabled=flags.use_mixed_precision):
+        batch = augment_training_batch(batch, flags)
+        with torch.amp.autocast("cuda", enabled=flags.use_mixed_precision):
             flattened_batch = buffers_apply(batch, lambda x: torch.flatten(x, start_dim=0, end_dim=1))
-            learner_outputs = learner_model(flattened_batch)
+            use_aux_risk = bool(getattr(flags, "use_aux_risk", False)) and aux_risk_head is not None
+            gate_only = bool(getattr(flags, "gate_only_training", False))
+            learner_outputs = learner_model(
+                flattened_batch,
+                return_features=use_aux_risk or gate_only,
+            )
+            aux_base_features = learner_outputs.pop("base_features", None)
+            aux_input_mask = learner_outputs.pop("feature_input_mask", None)
+            gate_probabilities = learner_outputs.pop("gate_probabilities", {})
+            gate_probability_mean = torch.zeros((), device=flags.learner_device)
+            if gate_probabilities:
+                gate_probability_mean = torch.stack([
+                    probability.mean() for probability in gate_probabilities.values()
+                ]).mean()
+            gate_intervention_loss = (
+                getattr(flags, "gate_intervention_cost", 0.0) * gate_probability_mean
+            )
+            aux_risk_loss = torch.zeros((), device=flags.learner_device)
+            aux_loss20_recall = torch.zeros((), device=flags.learner_device)
+            aux_loss20_precision = torch.zeros((), device=flags.learner_device)
+            aux_loss20_positive_rate = torch.zeros((), device=flags.learner_device)
+            if use_aux_risk:
+                aux_logits = aux_risk_head(aux_base_features, aux_input_mask)["loss20_logit"]
+                aux_logits = aux_logits.view(flags.unroll_length + 1, flags.batch_size, 2)
+                city_counts = count_city_tiles(batch["obs"]["city_tile"])
+                aux_labels, aux_valid = make_city_loss_labels(
+                    city_counts,
+                    horizon=getattr(flags, "aux_risk_horizon", 20),
+                )
+                aux_risk_loss = balanced_bce_with_logits(
+                    aux_logits[:-1],
+                    aux_labels[:-1],
+                    aux_valid[:-1],
+                    pos_weight_scale=getattr(flags, "aux_risk_pos_weight_scale", 1.0),
+                )
+                aux_probs = aux_logits[:-1].detach().sigmoid()
+                aux_pred = aux_probs >= getattr(flags, "aux_risk_threshold", 0.40)
+                aux_eval_valid = aux_valid[:-1]
+                aux_eval_labels = aux_labels[:-1].bool()
+                aux_tp = (aux_pred & aux_eval_labels & aux_eval_valid).sum().float()
+                aux_fp = (aux_pred & ~aux_eval_labels & aux_eval_valid).sum().float()
+                aux_fn = (~aux_pred & aux_eval_labels & aux_eval_valid).sum().float()
+                aux_loss20_recall = aux_tp / (aux_tp + aux_fn).clamp(min=1.0)
+                aux_loss20_precision = aux_tp / (aux_tp + aux_fp).clamp(min=1.0)
+                aux_loss20_positive_rate = (aux_eval_labels & aux_eval_valid).sum().float() / aux_eval_valid.sum().clamp(min=1)
             learner_outputs = buffers_apply(learner_outputs, lambda x: x.view(flags.unroll_length + 1,
                                                                               flags.batch_size,
                                                                               *x.shape[1:]))
@@ -303,8 +632,15 @@ def learn(
                 device=flags.learner_device
             )
             combined_learner_action_log_probs = torch.zeros_like(combined_behavior_action_log_probs)
+            effective_action_counts = count_effective_actions(
+                batch["info"]["actions_taken"]
+            ).to(dtype=combined_behavior_action_log_probs.dtype)
             combined_teacher_kl_loss = torch.zeros_like(combined_behavior_action_log_probs)
             teacher_kl_losses = {}
+            teacher_bc_space_losses = {}
+            teacher_bc_accuracies = {}
+            teacher_bc_total_count = torch.zeros((), device=flags.learner_device)
+            teacher_bc_total_correct = torch.zeros((), device=flags.learner_device)
             combined_learner_entropy = torch.zeros_like(combined_behavior_action_log_probs)
             entropies = {}
             for act_space in batch["actions"].keys():
@@ -335,14 +671,30 @@ def learn(
                         teacher_outputs["policy_logits"][act_space],
                         any_actions_taken
                     )
+                    teacher_bc_space_loss, teacher_bc_correct, teacher_bc_count = compute_teacher_bc_loss(
+                        learner_policy_logits,
+                        teacher_outputs["policy_logits"][act_space],
+                        any_actions_taken,
+                    )
                 else:
                     teacher_kl_loss = torch.zeros_like(combined_teacher_kl_loss)
+                    teacher_bc_space_loss = torch.zeros_like(combined_behavior_action_log_probs)
+                    teacher_bc_correct = torch.zeros((), device=flags.learner_device)
+                    teacher_bc_count = torch.zeros((), device=flags.learner_device)
                 combined_teacher_kl_loss = combined_teacher_kl_loss + teacher_kl_loss
+                teacher_bc_total_count = teacher_bc_total_count + teacher_bc_count
+                teacher_bc_total_correct = teacher_bc_total_correct + teacher_bc_correct
+                teacher_bc_space_losses[act_space] = (
+                    teacher_bc_space_loss.sum() / teacher_bc_count.clamp(min=1)
+                )
                 n_actions_taken = any_actions_taken.sum().clamp(min=1)
                 teacher_kl_losses[act_space] = (reduce(
                     teacher_kl_loss,
                     reduction="sum",
                 ) / n_actions_taken).detach().cpu().item()
+                teacher_bc_accuracies[act_space] = (
+                    teacher_bc_correct / teacher_bc_count.clamp(min=1)
+                ).detach().cpu().item()
 
                 learner_policy_entropy = combine_policy_entropy(
                     learner_policy_logits,
@@ -380,35 +732,105 @@ def learn(
                 lmb=flags.lmb
             )
 
-            vtrace_pg_loss = compute_policy_gradient_loss(
-                combined_learner_action_log_probs,
+            vtrace_policy_advantages = stabilize_policy_advantages(
                 vtrace_returns.pg_advantages,
-                reduction=flags.reduction
+                flags.normalize_policy_advantages,
+                flags.policy_advantage_clip,
             )
+            policy_action_normalizer = (
+                effective_action_counts.clamp(min=1.)
+                if flags.normalize_policy_log_probs_by_actions
+                else torch.ones_like(effective_action_counts)
+            )
+            normalized_learner_action_log_probs = (
+                combined_learner_action_log_probs / policy_action_normalizer
+            )
+            normalized_behavior_action_log_probs = (
+                combined_behavior_action_log_probs / policy_action_normalizer
+            )
+            appo_clip_fraction = torch.zeros((), device=flags.learner_device)
+            appo_approx_kl = torch.zeros((), device=flags.learner_device)
+            if flags.algo == "appo_vtrace":
+                vs_t_plus_1 = torch.cat((vtrace_returns.vs[1:], bootstrap_value.unsqueeze(0)), dim=0)
+                appo_advantages = stabilize_policy_advantages(
+                    batch["reward"] + discounts * vs_t_plus_1 - values,
+                    flags.normalize_policy_advantages,
+                    flags.policy_advantage_clip,
+                )
+                vtrace_pg_loss, appo_clip_fraction, appo_approx_kl = compute_appo_policy_loss(
+                    normalized_learner_action_log_probs,
+                    normalized_behavior_action_log_probs,
+                    appo_advantages,
+                    flags.ppo_clip_ratio,
+                    flags.reduction,
+                )
+            elif flags.algo == "impala":
+                vtrace_pg_loss = compute_policy_gradient_loss(
+                    normalized_learner_action_log_probs,
+                    vtrace_policy_advantages,
+                    reduction=flags.reduction
+                )
+            else:
+                raise ValueError(f"Unsupported training algo: {flags.algo}")
             upgo_clipped_importance = torch.minimum(
                 vtrace_returns.log_rhos.exp(),
                 torch.ones_like(vtrace_returns.log_rhos)
             ).detach()
-            upgo_pg_loss = compute_policy_gradient_loss(
-                combined_learner_action_log_probs,
+            upgo_policy_advantages = stabilize_policy_advantages(
                 upgo_clipped_importance * upgo_returns.advantages,
-                reduction=flags.reduction
+                flags.normalize_policy_advantages,
+                flags.policy_advantage_clip,
+            )
+            upgo_pg_loss = (
+                compute_policy_gradient_loss(
+                    normalized_learner_action_log_probs,
+                    upgo_policy_advantages,
+                    reduction=flags.reduction
+                )
+                if flags.algo == "impala"
+                else torch.zeros_like(vtrace_pg_loss)
             )
             baseline_loss = compute_baseline_loss(
                 values,
                 td_lambda_returns.vs,
                 reduction=flags.reduction
             )
+            actor_critic_normalizer = (
+                flags.unroll_length * flags.batch_size * values.shape[-1]
+                if flags.normalize_actor_critic_losses
+                else 1
+            )
+            vtrace_pg_loss = vtrace_pg_loss / actor_critic_normalizer
+            upgo_pg_loss = upgo_pg_loss / actor_critic_normalizer
+            baseline_loss = baseline_loss / actor_critic_normalizer
             teacher_kl_loss = flags.teacher_kl_cost * reduce(
                 combined_teacher_kl_loss,
                 reduction=flags.reduction
+            )
+            bc_games = flags.teacher_bc_game_offset + total_games_played
+            bc_progress = min(bc_games / max(flags.teacher_bc_anneal_games, 1), 1.0)
+            teacher_bc_cost = (
+                flags.teacher_bc_cost_start
+                + bc_progress * (flags.teacher_bc_cost_end - flags.teacher_bc_cost_start)
+            )
+            teacher_bc_weighted_loss = torch.zeros((), device=flags.learner_device)
+            teacher_bc_weight_sum = 0.0
+            for act_space, space_loss in teacher_bc_space_losses.items():
+                space_weight = getattr(flags, f"teacher_bc_{act_space}_weight")
+                if teacher_bc_accuracies[act_space] or space_loss.detach().item() > 0.:
+                    teacher_bc_weighted_loss = teacher_bc_weighted_loss + space_weight * space_loss
+                    teacher_bc_weight_sum += space_weight
+            teacher_bc_loss = (
+                teacher_bc_cost
+                * teacher_bc_weighted_loss
+                / max(teacher_bc_weight_sum, 1.0)
             )
             if flags.use_teacher:
                 teacher_baseline_loss = flags.teacher_baseline_cost * compute_baseline_loss(
                     values,
                     teacher_outputs["baseline"],
                     reduction=flags.reduction
-                )
+                ) / actor_critic_normalizer
             else:
                 teacher_baseline_loss = torch.zeros_like(baseline_loss)
             entropy_loss = flags.entropy_cost * reduce(
@@ -416,15 +838,20 @@ def learn(
                 reduction=flags.reduction
             )
             if baseline_only:
-                total_loss = baseline_loss + teacher_baseline_loss
+                total_loss = baseline_loss + teacher_baseline_loss + teacher_bc_loss
                 vtrace_pg_loss, upgo_pg_loss, teacher_kl_loss, entropy_loss = torch.zeros(4) + float("nan")
             else:
-                total_loss = (vtrace_pg_loss +
-                              upgo_pg_loss +
+                total_loss = (flags.rl_policy_cost * (vtrace_pg_loss + upgo_pg_loss) +
                               baseline_loss +
+                              teacher_bc_loss +
                               teacher_kl_loss +
                               teacher_baseline_loss +
                               entropy_loss)
+            total_loss = (
+                total_loss
+                + getattr(flags, "aux_risk_cost", 0.0) * aux_risk_loss
+                + gate_intervention_loss
+            )
 
             last_lr = lr_scheduler.get_last_lr()
             assert len(last_lr) == 1, 'Logging per-parameter LR still needs support'
@@ -470,11 +897,17 @@ def learn(
                 },
                 "Actions": action_distributions_aggregated,
                 "Loss": {
+                    "algo": flags.algo,
                     "vtrace_pg_loss": vtrace_pg_loss.detach().item(),
+                    "appo_clip_fraction": appo_clip_fraction.detach().item(),
+                    "appo_approx_kl": appo_approx_kl.detach().item(),
                     "upgo_pg_loss": upgo_pg_loss.detach().item(),
                     "baseline_loss": baseline_loss.detach().item(),
                     "teacher_kl_loss": teacher_kl_loss.detach().item(),
+                    "teacher_bc_loss": teacher_bc_loss.detach().item(),
                     "teacher_baseline_loss": teacher_baseline_loss.detach().item(),
+                    "aux_loss20_loss": aux_risk_loss.detach().item(),
+                    "gate_intervention_loss": gate_intervention_loss.detach().item(),
                     "entropy_loss": entropy_loss.detach().item(),
                     "total_loss": total_loss.detach().item(),
                 },
@@ -486,24 +919,54 @@ def learn(
                     "overall": sum(tkld for tkld in teacher_kl_losses.values() if not math.isnan(tkld)),
                     **teacher_kl_losses
                 },
+                "Teacher_BC_Accuracy": {
+                    "overall": (teacher_bc_total_correct / teacher_bc_total_count.clamp(min=1)).item(),
+                    **teacher_bc_accuracies,
+                },
                 "Misc": {
                     "learning_rate": last_lr,
-                    "total_games_played": total_games_played
+                    "teacher_bc_cost": teacher_bc_cost,
+                    "vtrace_advantage_abs_max": vtrace_policy_advantages.abs().max().item(),
+                    "upgo_advantage_abs_max": upgo_policy_advantages.abs().max().item(),
+                    "actor_critic_normalizer": actor_critic_normalizer,
+                    "mean_effective_actions": effective_action_counts.mean().item(),
+                    "total_games_played": total_games_played,
+                    "aux_loss20_precision": aux_loss20_precision.detach().item(),
+                    "aux_loss20_recall": aux_loss20_recall.detach().item(),
+                    "aux_loss20_positive_rate": aux_loss20_positive_rate.detach().item(),
+                    "gate_probability_mean": gate_probability_mean.detach().item(),
                 },
             }
 
             optimizer.zero_grad()
+            if not torch.isfinite(total_loss):
+                raise FloatingPointError(
+                    f"Non-finite learner loss at games={total_games_played}: {stats}"
+                )
             if flags.use_mixed_precision:
                 grad_scaler.scale(total_loss).backward()
                 if flags.clip_grads is not None:
                     grad_scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(learner_model.parameters(), flags.clip_grads)
+                    grad_params = [p for p in learner_model.parameters() if p.requires_grad]
+                    if aux_risk_head is not None:
+                        grad_params += list(aux_risk_head.parameters())
+                    if not all(
+                        parameter.grad is None or torch.isfinite(parameter.grad).all()
+                        for parameter in grad_params
+                    ):
+                        raise FloatingPointError(
+                            f"Non-finite learner gradient at games={total_games_played}"
+                        )
+                    torch.nn.utils.clip_grad_norm_(grad_params, flags.clip_grads)
                 grad_scaler.step(optimizer)
                 grad_scaler.update()
             else:
                 total_loss.backward()
                 if flags.clip_grads is not None:
-                    torch.nn.utils.clip_grad_norm_(learner_model.parameters(), flags.clip_grads)
+                    grad_params = [p for p in learner_model.parameters() if p.requires_grad]
+                    if aux_risk_head is not None:
+                        grad_params += list(aux_risk_head.parameters())
+                    torch.nn.utils.clip_grad_norm_(grad_params, flags.clip_grads)
                 optimizer.step()
             if lr_scheduler is not None:
                 with warnings.catch_warnings():
@@ -548,15 +1011,19 @@ def train(flags):
 
     actor_model = create_model(flags, flags.actor_device, teacher_model_flags=teacher_flags, is_teacher_model=False)
     if checkpoint_state is not None:
-        actor_model.load_state_dict(checkpoint_state["model_state_dict"])
+        load_training_model_state(actor_model, checkpoint_state["model_state_dict"], flags)
+    load_spatial_sidecar_pretrain(actor_model, getattr(flags, "spatial_risk_sidecar_checkpoint", None))
+    load_student_pretrain(actor_model, getattr(flags, "student_pretrain_checkpoint", None))
+    if getattr(flags, "gate_only_training", False):
+        configure_gate_only_training(actor_model, training=False)
     actor_model.eval()
     actor_model.share_memory()
     n_trainable_params = sum(p.numel() for p in actor_model.parameters() if p.requires_grad)
     logging.info(f'Training model with {n_trainable_params:,d} parameters.')
 
     actor_processes = []
-    free_queue = mp.SimpleQueue()
-    full_queue = mp.SimpleQueue()
+    free_queue = mp.Queue()
+    full_queue = mp.Queue()
 
     for i in range(flags.num_actors):
         actor_start = threading.Thread if flags.debug else mp.Process
@@ -578,24 +1045,53 @@ def train(flags):
 
     learner_model = create_model(flags, flags.learner_device, teacher_model_flags=teacher_flags, is_teacher_model=False)
     if checkpoint_state is not None:
-        learner_model.load_state_dict(checkpoint_state["model_state_dict"])
-    learner_model.train()
+        load_training_model_state(learner_model, checkpoint_state["model_state_dict"], flags)
+    load_spatial_sidecar_pretrain(learner_model, getattr(flags, "spatial_risk_sidecar_checkpoint", None))
+    load_student_pretrain(learner_model, getattr(flags, "student_pretrain_checkpoint", None))
+    if getattr(flags, "gate_only_training", False):
+        configure_gate_only_training(learner_model, training=True)
+    else:
+        learner_model.train()
     learner_model = learner_model.share_memory()
+    aux_risk_head = None
+    if getattr(flags, "gate_only_training", False) and getattr(flags, "use_aux_risk", False):
+        raise ValueError("gate_only_training currently requires use_aux_risk=false.")
+    if getattr(flags, "use_aux_risk", False):
+        aux_risk_head = AuxiliaryRiskHead(
+            in_channels=learner_model.base_out_channels,
+            hidden_channels=getattr(flags, "aux_risk_hidden_channels", 128),
+            dropout=getattr(flags, "aux_risk_dropout", 0.10),
+        ).to(flags.learner_device)
+        if (
+            checkpoint_state is not None
+            and checkpoint_state.get("aux_risk_head_state_dict") is not None
+        ):
+            aux_risk_head.load_state_dict(checkpoint_state["aux_risk_head_state_dict"])
+        aux_risk_head.train()
+        aux_risk_head = aux_risk_head.share_memory()
     if not flags.disable_wandb:
         wandb.watch(learner_model, flags.model_log_freq, log="all", log_graph=True)
 
+    optimizer_params = [p for p in learner_model.parameters() if p.requires_grad]
+    if aux_risk_head is not None:
+        optimizer_params += list(aux_risk_head.parameters())
     optimizer = flags.optimizer_class(
-        learner_model.parameters(),
+        optimizer_params,
         **flags.optimizer_kwargs
     )
+    if not optimizer_params:
+        raise ValueError("No trainable parameters were selected for the optimizer.")
     if checkpoint_state is not None and not flags.weights_only:
-        optimizer.load_state_dict(checkpoint_state["optimizer_state_dict"])
+        try:
+            optimizer.load_state_dict(checkpoint_state["optimizer_state_dict"])
+        except ValueError as exc:
+            logging.warning(f"Could not load optimizer state; starting optimizer fresh. Reason: {exc}")
 
     # Load teacher model for KL loss
     if flags.use_teacher:
-        if flags.teacher_kl_cost <= 0. and flags.teacher_baseline_cost <= 0.:
-            raise ValueError("It does not make sense to use teacher when teacher_kl_cost <= 0 "
-                             "and teacher_baseline_cost <= 0")
+        if (flags.teacher_kl_cost <= 0. and flags.teacher_baseline_cost <= 0.
+                and flags.teacher_bc_cost_start <= 0. and flags.teacher_bc_cost_end <= 0.):
+            raise ValueError("Teacher enabled but all teacher loss costs are disabled")
         teacher_model = create_model(
             flags,
             flags.learner_device,
@@ -619,17 +1115,26 @@ def train(flags):
                             f"Setting flags.teacher_baseline_cost to 0.")
         flags.teacher_kl_cost = 0.
         flags.teacher_baseline_cost = 0.
+        flags.teacher_bc_cost_start = 0.
+        flags.teacher_bc_cost_end = 0.
+
+    training_step_budget = (
+        flags.total_steps
+        if flags.total_games is None
+        else flags.total_games * flags.expected_steps_per_game
+    )
 
     def lr_lambda(epoch):
         min_pct = flags.min_lr_mod
-        pct_complete = min(epoch * t * b, flags.total_steps) / flags.total_steps
+        pct_complete = min(epoch * t * b, training_step_budget) / training_step_budget
         scaled_pct_complete = pct_complete * (1. - min_pct)
         return 1. - scaled_pct_complete
 
-    grad_scaler = amp.GradScaler()
+    grad_scaler = torch.amp.GradScaler("cuda", enabled=flags.use_mixed_precision)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     if checkpoint_state is not None and not flags.weights_only:
-        scheduler.load_state_dict(checkpoint_state["scheduler_state_dict"])
+        if "scheduler_state_dict" in checkpoint_state:
+            scheduler.load_state_dict(checkpoint_state["scheduler_state_dict"])
 
     step, total_games_played, stats = 0, 0, {}
     if checkpoint_state is not None and not flags.weights_only:
@@ -644,11 +1149,16 @@ def train(flags):
         else:
             logging.warning("Loading old checkpoint_state without 'total_games_played' saved. Starting at step 0.")
 
+    def training_complete():
+        if flags.total_games is not None:
+            return total_games_played >= flags.total_games
+        return step >= flags.total_steps
+
     def batch_and_learn(learner_idx, lock=threading.Lock()):
         """Thread target for the learning process."""
         nonlocal step, total_games_played, stats
         timings = prof.Timings()
-        while step < flags.total_steps:
+        while not training_complete():
             timings.reset()
             full_batch = get_batch(
                 flags,
@@ -656,6 +1166,7 @@ def train(flags):
                 full_queue,
                 buffers,
                 timings,
+                actor_processes=actor_processes,
             )
             if flags.batch_size < flags.n_actor_envs:
                 batches = split_buffers(full_batch, flags.batch_size, dim=1, contiguous=True)
@@ -667,6 +1178,7 @@ def train(flags):
                     actor_model=actor_model,
                     learner_model=learner_model,
                     teacher_model=teacher_model,
+                    aux_risk_head=aux_risk_head,
                     batch=batch,
                     optimizer=optimizer,
                     grad_scaler=grad_scaler,
@@ -679,7 +1191,7 @@ def train(flags):
                     if not flags.disable_wandb:
                         wandb.log(stats, step=step)
             timings.time("learn")
-        if learner_idx == 0:
+        if learner_idx == 0 and flags.log_detailed_stats:
             logging.info(f"Batch and learn timing statistics: {timings.summary()}")
 
     for m in range(flags.num_buffers):
@@ -694,10 +1206,14 @@ def train(flags):
         learner_threads.append(thread)
 
     def checkpoint(checkpoint_path: Union[str, Path]):
-        logging.info(f"Saving checkpoint to {checkpoint_path}")
+        if flags.log_detailed_stats:
+            logging.info(f"Saving checkpoint to {checkpoint_path}")
         torch.save(
             {
                 "model_state_dict": actor_model.state_dict(),
+                "aux_risk_head_state_dict": (
+                    aux_risk_head.state_dict() if aux_risk_head is not None else None
+                ),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "step": step,
@@ -708,38 +1224,117 @@ def train(flags):
         torch.save(
             {
                 "model_state_dict": actor_model.state_dict(),
+                "aux_risk_head_state_dict": (
+                    aux_risk_head.state_dict() if aux_risk_head is not None else None
+                ),
             },
             checkpoint_path + "_weights.pt"
         )
 
     timer = timeit.default_timer
+    monitor_start_time = timer()
+    last_progress_step = step
+    last_progress_time = monitor_start_time
     try:
         next_checkpoint_step = int(flags.checkpoint_freq)
-        while step < flags.total_steps:
+        while not training_complete():
             start_step = step
             start_time = timer()
-            time.sleep(5)
+            time.sleep(flags.console_log_interval)
 
             # Save every checkpoint_freq learner steps.
             if flags.checkpoint_freq and step >= next_checkpoint_step:
-                cp_path = str(step).zfill(int(math.log10(flags.total_steps)) + 1)
+                cp_path = str(step).zfill(int(math.log10(max(training_step_budget, 1))) + 1)
                 checkpoint(cp_path)
                 next_checkpoint_step += int(flags.checkpoint_freq)
 
             sps = (step - start_step) / (timer() - start_time)
             bps = (step - start_step) / (t * b) / (timer() - start_time)
-            logging.info(f"Steps {step:d} @ {sps:.1f} SPS / {bps:.1f} BPS. Stats:\n{pprint.pformat(stats)}")
+            if step > last_progress_step:
+                last_progress_step = step
+                last_progress_time = timer()
+            if (
+                flags.actor_start_timeout_seconds
+                and step == 0
+                and timer() - monitor_start_time > flags.actor_start_timeout_seconds
+            ):
+                raise RuntimeError(
+                    "No actor rollout arrived before actor_start_timeout_seconds="
+                    f"{flags.actor_start_timeout_seconds}. "
+                    "Check actor startup errors, node/Lux dimensions, and PATH. "
+                    f"Actors: {format_actor_status(actor_processes)}"
+                )
+            if (
+                flags.training_stall_timeout_seconds
+                and step > 0
+                and timer() - last_progress_time > flags.training_stall_timeout_seconds
+            ):
+                raise RuntimeError(
+                    "No learner progress for training_stall_timeout_seconds="
+                    f"{flags.training_stall_timeout_seconds}. "
+                    f"Last progress step: {last_progress_step}. "
+                    f"Actors: {format_actor_status(actor_processes)}"
+                )
+            if flags.log_detailed_stats:
+                logging.info(
+                    "Steps %d @ %.1f SPS / %.1f BPS. Stats:\n%s",
+                    step,
+                    sps,
+                    bps,
+                    pprint.pformat(stats),
+                )
+            else:
+                env_stats = stats.get("Env", {})
+                loss_stats = stats.get("Loss", {})
+                bc_stats = stats.get("Teacher_BC_Accuracy", {})
+                misc_stats = stats.get("Misc", {})
+                total_loss = float(loss_stats.get("total_loss", float("nan")))
+
+                def format_env_stat(name: str, decimals: int) -> str:
+                    value = float(env_stats.get(name, float("nan")))
+                    return f"{value:.{decimals}f}" if math.isfinite(value) else "--"
+
+                logging.info(
+                    "Games %d/%s | steps %d | %.1f SPS | loss %s | reward %s | "
+                    "bc %.3f W%.0f/C%.0f/K%.0f @ %.3f | aux %.3f P%.2f/R%.2f/+%.2f | "
+                    "city tiles %s | research %s",
+                    total_games_played,
+                    flags.total_games if flags.total_games is not None else "--",
+                    step,
+                    sps,
+                    f"{total_loss:.3f}" if math.isfinite(total_loss) else "INVALID",
+                    format_env_stat("mean_cumulative_rewards", 3),
+                    float(loss_stats.get("teacher_bc_loss", 0.0)),
+                    100.0 * float(bc_stats.get("worker", 0.0)),
+                    100.0 * float(bc_stats.get("city_tile", 0.0)),
+                    100.0 * float(bc_stats.get("cart", 0.0)),
+                    float(misc_stats.get("teacher_bc_cost", 0.0)),
+                    float(loss_stats.get("aux_loss20_loss", 0.0)),
+                    float(misc_stats.get("aux_loss20_precision", 0.0)),
+                    float(misc_stats.get("aux_loss20_recall", 0.0)),
+                    float(misc_stats.get("aux_loss20_positive_rate", 0.0)),
+                    format_env_stat("city_tiles_final", 1),
+                    format_env_stat("research_points", 1),
+                )
     except KeyboardInterrupt:
         # Try checkpointing and joining actors then quit.
-        logging.info(f"Training interrupted after {step:d} steps.")
+        logging.info(
+            "Training interrupted after %d games and %d steps.",
+            total_games_played,
+            step,
+        )
     else:
         for thread in learner_threads:
             thread.join()
-        logging.info(f"Learning finished after {step:d} steps.")
+        logging.info(
+            "Learning finished after %d games and %d steps.",
+            total_games_played,
+            step,
+        )
     finally:
         for _ in range(flags.num_actors):
             free_queue.put(None)
         for actor in actor_processes:
             actor.join(timeout=1)
-        cp_path = str(step).zfill(int(math.log10(flags.total_steps)) + 1)
+        cp_path = str(step).zfill(int(math.log10(max(training_step_budget, 1))) + 1)
         checkpoint(cp_path)

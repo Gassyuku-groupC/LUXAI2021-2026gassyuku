@@ -1,0 +1,17 @@
+defaults:
+  - conv_teacher_bc_dagger_v6_16x16
+  - _self_
+
+name: conv_teacher_bc_dagger_v7_16x16
+
+# Actor-critic losses are already normalized in v6. Keep teacher guidance at a
+# comparable scale without allowing BC to dominate the corrected fuel reward.
+teacher_bc_cost_start: 1.0
+teacher_bc_cost_end: 0.5
+teacher_bc_anneal_games: 1000
+teacher_bc_game_offset: 0
+rl_policy_cost: 1.0
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v7_16x16/${now:%Y-%m-%d_%H-%M-%S}

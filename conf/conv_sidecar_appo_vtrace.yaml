@@ -1,0 +1,30 @@
+defaults:
+  - conv_sidecar_bc_stage
+  - _self_
+
+name: conv_sidecar_appo_vtrace
+group: sidecar_bc_to_appo
+algo: appo_vtrace
+ppo_clip_ratio: 0.20
+rl_policy_cost: 1.0
+teacher_bc_cost_start: 0.10
+teacher_bc_cost_end: 0.0
+teacher_bc_anneal_games: 500
+reference_policy_kl_cost: 0.005
+optimizer_kwargs:
+  lr: 1.0e-06
+  eps: 0.0003
+
+risk_gate_enabled: true
+risk_thresholds:
+  12: 0.9582753841190409
+  16: 0.9459641069457523
+  24: 0.9389875956490136
+  32: 0.8918934056850649
+safe_expansion_threshold: 0.80
+logit_bias_lambda: 4.0
+
+# Restore first through the inherited load_dir, then overlay the converged joint BC student.
+student_pretrain_checkpoint: D:/Luxai/Kaggle_Lux_AI_2021/outputs/first_actor_sidecar_bc_v3/best.pt
+weights_only: true
+total_games: 2000
