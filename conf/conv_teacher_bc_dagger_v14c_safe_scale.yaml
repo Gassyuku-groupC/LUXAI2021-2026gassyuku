@@ -1,0 +1,69 @@
+defaults:
+  - conv_teacher_bc_dagger_v14b_scale_loss_stable
+  - _self_
+
+name: conv_teacher_bc_dagger_v14c_safe_scale
+group: local_teacher_bc_dagger_v14c_safe_scale
+
+# V14/V14b proved scale pressure can grow cities, but it also rewarded unsafe
+# late-game bloat. V14c only rewards scale when fuel buffers are healthy and
+# adds a focused late penalty for large low-fuel cities.
+teacher_kl_cost: 0.02
+teacher_bc_cost_start: 2.0
+teacher_bc_cost_end: 1.0
+teacher_bc_anneal_games: 1500
+rl_policy_cost: 0.45
+policy_advantage_clip: 3.0
+
+reward_space_kwargs:
+  research_late_scale: 0.10
+  small_map_research: 0.0
+
+  city_gain: 0.6
+  city_loss: 20.0
+  unit: 0.16
+
+  strategy_buffer_start_turn: 120
+  strategy_buffer_mid_turn: 160
+  strategy_buffer_late_turn: 240
+  min_buffer_target_early: 8.0
+  min_buffer_target_mid: 10.0
+  p25_buffer_target_mid: 15.0
+  p25_buffer_target_late: 20.0
+
+  strategy_min_buffer: 0.55
+  strategy_p25_buffer: 0.45
+
+  risk_adjusted_size_start_turn: 120
+  risk_adjusted_city_gain: 0.30
+  risk_adjusted_unit_gain: 0.05
+  risk_adjusted_size_buffer_blend: 0.70
+
+  scale_target_start_turn: 120
+  scale_target_mid_turn: 160
+  scale_target_late_turn: 240
+  scale_target_early_density: 0.04
+  scale_target_mid_density: 0.10
+  scale_target_late_density: 0.18
+  scale_target_end_density: 0.22
+  scale_target_bonus: 0.18
+  scale_target_shortfall: 0.22
+  safe_scale_target_bonus: 0.10
+
+  unsafe_large_city_start_turn: 240
+  unsafe_large_city_late_turn: 320
+  unsafe_large_city_min_tiles: 20
+  unsafe_large_city_target_turns: 12.0
+  unsafe_large_city_late_target_turns: 20.0
+  unsafe_large_city: 1.6
+
+  buffer_drop_with_growth: 14.0
+  buffer_growth_drop_threshold: 3.0
+  buffer_growth_drop_clip: 8.0
+
+total_games: 16
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v14c_safe_scale/${now:%Y-%m-%d_%H-%M-%S}

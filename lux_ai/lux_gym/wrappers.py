@@ -109,6 +109,11 @@ class LoggingEnv(gym.Wrapper):
         game_state = self.env.unwrapped.game_state
         logs = {
             "step": [game_state.turn],
+            "map_size": [game_state.map_width],
+            **{
+                f"map_{size}_episode": [float(game_state.map_width == size)]
+                for size in (12, 16, 24, 32)
+            },
             "city_tiles": [p.city_tile_count for p in game_state.players],
             "separate_cities": [len(p.cities) for p in game_state.players],
             "workers": [sum(u.is_worker() for u in p.units) for p in game_state.players],

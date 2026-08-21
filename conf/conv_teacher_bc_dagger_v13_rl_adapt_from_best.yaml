@@ -1,0 +1,43 @@
+defaults:
+  - conv_teacher_bc_dagger_v12c_side_balance_delayed_risk_size
+  - _self_
+
+name: conv_teacher_bc_dagger_v13_rl_adapt_from_best
+group: local_teacher_bc_dagger_v13_rl_adapt_from_best
+
+# Conservative RL continuation from the current best agent.
+# Keep side-balanced sampling so p0/p1 are both trained by the same policy,
+# while avoiding another direct Actor rewrite from offline labels.
+training_player_swap_probability: 0.5
+training_player_swap_per_sample: true
+
+reward_space_kwargs:
+  research_late_scale: 0.10
+  small_map_research: 0.0
+
+  strategy_buffer_start_turn: 120
+  strategy_buffer_mid_turn: 160
+  strategy_buffer_late_turn: 240
+  min_buffer_target_early: 8.0
+  min_buffer_target_mid: 10.0
+  p25_buffer_target_mid: 15.0
+  p25_buffer_target_late: 20.0
+
+  strategy_min_buffer: 0.70
+  strategy_p25_buffer: 0.50
+
+  buffer_drop_with_growth: 16.0
+  buffer_growth_drop_threshold: 3.0
+  buffer_growth_drop_clip: 15.0
+
+  risk_adjusted_size_start_turn: 120
+  risk_adjusted_city_gain: 0.70
+  risk_adjusted_unit_gain: 0.12
+  risk_adjusted_size_buffer_blend: 0.60
+
+total_games: 16
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v13_rl_adapt_from_best/${now:%Y-%m-%d_%H-%M-%S}

@@ -8,6 +8,7 @@ from typing import *
 import yaml
 
 from . import data_augmentation
+from .gate_policy import RuntimeGatePolicy
 from ..lux_gym import create_reward_space, LuxEnv, wrappers
 from ..lux_gym.act_spaces import ACTION_MEANINGS
 from ..utils import DEBUG_MESSAGE, RUNTIME_DEBUG_MESSAGE, LOCAL_EVAL
@@ -86,6 +87,7 @@ class RLAgent:
         # Various utility properties
         self.me = self.game_state.players[obs.player]
         self.opp = self.game_state.players[(obs.player + 1) % 2]
+        self.runtime_gate_policy = RuntimeGatePolicy(self.agent_flags)
         self.my_city_tile_mat = np.zeros(MAX_BOARD_SIZE, dtype=bool)
         # NB: loc = pos[0] * n_cols + pos[1]
         self.loc_to_actionable_city_tiles = {}
@@ -94,6 +96,34 @@ class RLAgent:
 
         # Logging
         self.stopwatch = Stopwatch()
+
+    def city_fuel_turns(self, city) -> float:
+        return self.runtime_gate_policy.city_fuel_turns(city)
+
+    def city_fuel_buffer_summary(self) -> Dict[str, float]:
+        return self.runtime_gate_policy.city_fuel_buffer_summary(self.me)
+
+    def runtime_gate_active(self) -> bool:
+        return self.runtime_gate_policy.active(self.game_state)
+
+    def large_map_gate_strict(self, buffer: Dict[str, float]) -> bool:
+        return self.runtime_gate_policy.large_map_gate_strict(self.game_state, buffer)
+
+    def should_gate_build_worker(self, city_tile: CityTile, buffer: Dict[str, float]) -> bool:
+        return self.runtime_gate_policy.should_gate_build_worker(
+            self.game_state,
+            self.me,
+            city_tile,
+            buffer,
+        )
+
+    def should_gate_build_city(self, unit: Unit, buffer: Dict[str, float]) -> bool:
+        return self.runtime_gate_policy.should_gate_build_city(
+            self.game_state,
+            self.me,
+            unit,
+            buffer,
+        )
 
     def __call__(self, obs, conf, raw_model_output: bool = False):
         self.stopwatch.reset()
@@ -259,15 +289,19 @@ class RLAgent:
         # First handle city tile actions, ensuring the unit cap and research cap is not exceeded
         units_to_build = max(self.me.city_tile_count - len(self.me.units), 0)
         research_remaining = max(MAX_RESEARCH - self.me.research_points, 0)
+        fuel_buffer = self.city_fuel_buffer_summary()
         for loc in city_tile_priorities:
             loc = loc.item()
             actions = my_flat_actions["city_tile"][loc]
-            if self.loc_to_actionable_city_tiles.get(loc, None) is not None:
+            city_tile = self.loc_to_actionable_city_tiles.get(loc, None)
+            if city_tile is not None:
                 for i, act in enumerate(actions):
                     illegal_action = False
                     action_meaning = ACTION_MEANINGS["city_tile"][act]
                     # Check that it is allowed to build carts
                     if action_meaning == "BUILD_CART" and not self.agent_flags.can_build_carts:
+                        illegal_action = True
+                    elif action_meaning == "BUILD_WORKER" and self.should_gate_build_worker(city_tile, fuel_buffer):
                         illegal_action = True
                     # Check that the city will not build more units than the unit cap
                     elif action_meaning.startswith("BUILD_"):
@@ -326,14 +360,17 @@ class RLAgent:
                 for i, act in enumerate(actions):
                     illegal_action = False
                     action_meaning = ACTION_MEANINGS[unit_type][act]
+                    unit = actionable_list[acted_count]
                     if action_meaning.startswith("MOVE_"):
                         direction = action_meaning.split("_")[1]
-                        new_pos = actionable_list[acted_count].pos.translate(direction, 1)
+                        new_pos = unit.pos.translate(direction, 1)
                     else:
-                        new_pos = actionable_list[acted_count].pos
+                        new_pos = unit.pos
 
                     # Check that the new position is a legal square
-                    if (
+                    if unit_type == "worker" and action_meaning == "BUILD_CITY" and self.should_gate_build_city(unit, fuel_buffer):
+                        illegal_action = True
+                    elif (
                             new_pos.x < 0 or new_pos.x >= self.game_state.map_width or
                             new_pos.y < 0 or new_pos.y >= self.game_state.map_height
                     ):

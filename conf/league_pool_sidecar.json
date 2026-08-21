@@ -1,0 +1,47 @@
+{
+  "hard_win_rate": 0.45,
+  "night_loss_weight": 0.25,
+  "exploration": 0.05,
+  "opponents": [
+    {
+      "name": "best_agent",
+      "agent_path": "outputs/submission_packages/best_agent/main.py",
+      "kind": "reference",
+      "games": 0,
+      "wins": 0,
+      "night_loss_mean": 0.0
+    },
+    {
+      "name": "first",
+      "agent_path": "internal_testing/hall_of_fame/11-24_12-56-23_062179520_must_research/main.py",
+      "kind": "baseline",
+      "games": 0,
+      "wins": 0,
+      "night_loss_mean": 0.0
+    },
+    {
+      "name": "stage350",
+      "agent_path": "outputs/auto_league_dagger_v4_16x16/learner_agent/main.py",
+      "kind": "historical",
+      "games": 0,
+      "wins": 0,
+      "night_loss_mean": 0.0
+    },
+    {
+      "name": "stage400",
+      "agent_path": "outputs/auto_league_dagger_v7_16x16/best_agent/main.py",
+      "kind": "historical",
+      "games": 0,
+      "wins": 0,
+      "night_loss_mean": 0.0
+    },
+    {
+      "name": "public_ilialar",
+      "agent_path": "external_agents/kaggle_public/ilialar_risk_averse/main.py",
+      "kind": "external",
+      "games": 0,
+      "wins": 0,
+      "night_loss_mean": 0.0
+    }
+  ]
+}

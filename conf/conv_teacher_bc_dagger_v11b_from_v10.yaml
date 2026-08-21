@@ -1,0 +1,10 @@
+defaults:
+  - conv_teacher_bc_dagger_v11_stability
+  - _self_
+
+name: conv_teacher_bc_dagger_v11b_from_v10
+group: local_teacher_bc_dagger_v11b_from_v10
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v11b_from_v10/${now:%Y-%m-%d_%H-%M-%S}

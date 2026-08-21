@@ -1,0 +1,43 @@
+defaults:
+  - conv_teacher_bc_dagger_v20_win_scale_gate
+  - _self_
+
+name: conv_learned_intervention_gate_v21
+group: local_learned_intervention_gate_v21
+
+# The original actor, backbone, and value head are frozen. Only this small
+# spatial gate receives gradients.
+learned_intervention_gate_enabled: true
+learned_intervention_gate_hidden_channels: 32
+learned_intervention_gate_initial_probability: 0.02
+learned_intervention_gate_hard_threshold: 0.80
+learned_intervention_gate_temperature: 1.0
+gate_only_training: true
+gate_intervention_cost: 0.002
+
+# Gate parameters start from scratch, so they can use a larger LR than the
+# full-actor continuation while remaining low risk to the frozen policy.
+optimizer_kwargs:
+  lr: 1.0e-04
+  eps: 0.0003
+rl_policy_cost: 1.0
+entropy_cost: 0.0
+
+# A weak teacher anchor acts as an unnecessary-intervention penalty. It cannot
+# modify the frozen actor; it can only push the gate back toward "keep".
+teacher_kl_cost: 0.010
+teacher_bc_cost_start: 0.08
+teacher_bc_cost_end: 0.04
+teacher_bc_anneal_games: 1000
+
+# Auxiliary risk was useful for representation learning, but gate-only mode
+# intentionally prevents any auxiliary gradient from entering the backbone.
+use_aux_risk: false
+aux_risk_cost: 0.0
+
+total_games: 32
+total_steps: 12800
+
+hydra:
+  run:
+    dir: outputs/learned_intervention_gate_v21/${now:%Y-%m-%d_%H-%M-%S}

@@ -1,0 +1,23 @@
+defaults:
+- conv_survival_research_buffer2_finetune_16x16
+- _self_
+
+hydra:
+  run:
+    dir: ./outputs/teacher_bc_dagger_16x16/${now:%m-%d_%H-%M-%S}
+
+name: teacher_bc_dagger_16x16
+group: local_teacher_bc_dagger
+
+# Hard behavior cloning on learner-visited states. The first-place model is
+# queried online, which gives DAgger-style supervision beyond teacher replays.
+teacher_bc_cost_start: 1.0
+teacher_bc_cost_end: 0.05
+teacher_bc_anneal_games: 500
+teacher_bc_game_offset: 0
+teacher_kl_cost: 0.002
+teacher_baseline_cost: 0.0
+
+total_games: 50
+total_steps: 20000
+expected_steps_per_game: 400

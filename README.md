@@ -20,6 +20,12 @@ The current goal is to make our agent survive longer in Lux AI 2021 and graduall
 3. Start from 16x16 maps, then extend to 24x24, 32x32, and mixed map sizes.
 4. Prioritize surviving to 360 turns before optimizing win rate and final score.
 
+## Experiment History
+
+The detailed Japanese training log for v1-v7, including configurations, evaluation
+results, failure analysis, and checkpoint decisions, is available at
+[`docs/training_log_v1_v7_ja.md`](docs/training_log_v1_v7_ja.md).
+
 ## Verified Current Route
 
 We have completed one small-scale 16x16 teacher-finetuning run:
@@ -94,7 +100,7 @@ Current main config:
 
 ```powershell
 $env:WANDB_MODE="offline"
-.\.venv\Scripts\python.exe run_monobeast.py --config-name conv_teacher_finetune_16x16
+.\.venv\Scripts\python.exe run_monobeast.py --config-name conv_survival_research_buffer2_finetune_16x16
 ```
 
 Training entry path:
@@ -112,6 +118,66 @@ Local changes kept in this repository:
 - Checkpoints are saved by learner-step interval instead of elapsed minutes.
 - Training logs are quieter by suppressing Gym/Hydra/CUDA warning noise.
 - `run_monobeast.py` does not automatically resume from a local `config.yaml` unless explicitly requested.
+
+### Automated self-play league
+
+The league controller trains in shorter game-count stages and evaluates every candidate from
+both player positions against the current best agent and the first-place agent.
+The v2 controller defaults to 100 completed games in 25-game stages, using two
+seeds. It starts the cumulative learner from the most stable v1 stage-100
+checkpoint while retaining the previous `best_agent` as the champion:
+
+```powershell
+Set-Location D:\Luxai\Kaggle_Lux_AI_2021
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\auto_train_league.ps1
+```
+
+For a short external smoke run:
+
+```powershell
+.\scripts\auto_train_league.ps1 -TotalGames 20 -GamesPerStage 10 -Seeds 12345
+```
+
+Each stage writes its weights, stateful replay files, and `evaluation.json` under
+`outputs/auto_league_dagger_v2_16x16/`. Stage directories use names such as
+`game_stage_00025`. A candidate is promoted to `best_agent` only when
+all evaluation games survive to turn 360, the largest night-time city loss is at
+most six tiles, and the combined win rate is at least 50 percent. These thresholds
+can be adjusted near the end of `scripts/auto_train_league.ps1`.
+
+The training environment already uses the same policy for both players. The
+league layer adds model selection: candidate versus current best prevents
+regression, while candidate versus first place tracks the external performance
+gap. Stop the controller with `Ctrl+C`; completed stage directories and the
+current `best_agent` remain available.
+
+### Teacher BC and online DAgger
+
+The default league config is `conv_teacher_bc_dagger_v2_16x16`. On every state
+visited by the learner, the first-place teacher supplies hard targets for the
+complete worker, city-tile, and cart action spaces. The loss combines RL,
+teacher KL, and action-space-balanced behavior-cloning cross entropy. Worker,
+city-tile, and cart BC weights are `2.0`, `3.0`, and `0.5`; the BC cost anneals
+from `20.0` to `2.0` over 1,000 completed games, and RL policy loss is scaled by
+`0.1` during this imitation-heavy phase.
+
+Fuel buffer targets are expressed in complete nights. A value of `2.0` now
+means 20 survivable night turns, not two turns. The v2 reward checks the full
+30-turn day before night and applies stronger penalties to unsafe expansion and
+city-tile loss.
+
+Compact logs report BC loss and teacher-action accuracy for worker (`W`), city
+tile (`C`), and cart (`K`) at the current BC cost:
+
+```text
+Games 20/25 | steps 7808 | loss 18.42 | bc 12.31 W82/C96/K55 @ 19.64
+```
+
+The bundled Sazuma fourth-place imitation-learning notebook remains a useful
+reference for replay dataset construction. This project extends that idea by
+using the existing full action space and querying the teacher on learner-visited
+states instead of limiting supervision to five worker actions.
 
 ## Agent Packaging
 

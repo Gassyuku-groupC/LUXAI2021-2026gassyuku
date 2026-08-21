@@ -1,0 +1,27 @@
+defaults:
+  - conv_teacher_bc_dagger_v12_strategy_buffer
+  - _self_
+
+name: conv_teacher_bc_dagger_v12b_side_balance_risk_size
+group: local_teacher_bc_dagger_v12b_side_balance_risk_size
+
+# Side-gap mitigation: swap each batch element independently instead of
+# flipping or not flipping the entire small rollout batch as one unit.
+training_player_swap_probability: 0.5
+training_player_swap_per_sample: true
+
+reward_space_kwargs:
+  # Keep v12's safety pressure, but move growth reward toward a smooth
+  # risk-adjusted size objective instead of raw expansion.
+  city_gain: 0.75
+  unit: 0.15
+  risk_adjusted_city_gain: 1.25
+  risk_adjusted_unit_gain: 0.20
+  risk_adjusted_size_buffer_blend: 0.60
+
+total_games: 16
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v12b_side_balance_risk_size/${now:%Y-%m-%d_%H-%M-%S}

@@ -1,0 +1,66 @@
+defaults:
+  - conv_teacher_bc_dagger_v13b_best_anchor
+  - _self_
+
+name: conv_teacher_bc_dagger_v14_scale_loss_balance
+group: local_teacher_bc_dagger_v14_scale_loss_balance
+
+# Long-horizon objective: learn to grow safely instead of only avoiding loss.
+# A best-agent teacher anchor remains active so 1000-game runs do not freely
+# drift into a new brittle policy.
+teacher_kl_cost: 0.01
+teacher_bc_cost_start: 1.5
+teacher_bc_cost_end: 0.50
+teacher_bc_anneal_games: 1000
+rl_policy_cost: 0.75
+policy_advantage_clip: 5.0
+
+reward_space_kwargs:
+  research_late_scale: 0.10
+  small_map_research: 0.0
+
+  # Keep city loss expensive, but pair it with explicit scale pressure.
+  city_gain: 0.8
+  city_loss: 16.0
+  unit: 0.18
+
+  strategy_buffer_start_turn: 120
+  strategy_buffer_mid_turn: 160
+  strategy_buffer_late_turn: 240
+  min_buffer_target_early: 8.0
+  min_buffer_target_mid: 10.0
+  p25_buffer_target_mid: 15.0
+  p25_buffer_target_late: 20.0
+
+  strategy_min_buffer: 0.45
+  strategy_p25_buffer: 0.35
+
+  risk_adjusted_size_start_turn: 120
+  risk_adjusted_city_gain: 0.45
+  risk_adjusted_unit_gain: 0.08
+  risk_adjusted_size_buffer_blend: 0.60
+
+  # Stage scale targets by board area. On 16x16 these are roughly:
+  # turn 120: 10 tiles, turn 160: 26, turn 240: 46, endgame: 56.
+  scale_target_start_turn: 120
+  scale_target_mid_turn: 160
+  scale_target_late_turn: 240
+  scale_target_early_density: 0.04
+  scale_target_mid_density: 0.10
+  scale_target_late_density: 0.18
+  scale_target_end_density: 0.22
+  scale_target_bonus: 0.18
+  scale_target_shortfall: 0.45
+  safe_scale_target_bonus: 0.22
+
+  # Still penalize growth that burns through the global fuel-turn buffer.
+  buffer_drop_with_growth: 10.0
+  buffer_growth_drop_threshold: 3.0
+  buffer_growth_drop_clip: 10.0
+
+total_games: 16
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/teacher_bc_dagger_v14_scale_loss_balance/${now:%Y-%m-%d_%H-%M-%S}

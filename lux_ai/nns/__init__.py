@@ -50,7 +50,8 @@ def _create_model(
         n_merge_layers=flags.n_merge_layers,
         sum_player_embeddings=flags.sum_player_embeddings,
         use_index_select=flags.use_index_select,
-        obs_space_prefix=obs_space_prefix
+        obs_space_prefix=obs_space_prefix,
+        feature_embedding_dims=getattr(flags, "feature_embedding_dims", None),
     )
     if flags.model_arch == "conv_model":
         base_model = nn.Sequential(
@@ -139,6 +140,41 @@ def _create_model(
         action_space=act_space.get_action_space(),
         reward_space=flags.reward_space.get_reward_spec(),
         n_value_heads=1,
-        rescale_value_input=flags.rescale_value_input
+        rescale_value_input=flags.rescale_value_input,
+        learned_intervention_gate_enabled=getattr(flags, "learned_intervention_gate_enabled", False),
+        learned_intervention_gate_hidden_channels=getattr(
+            flags, "learned_intervention_gate_hidden_channels", 32
+        ),
+        learned_intervention_gate_initial_probability=getattr(
+            flags, "learned_intervention_gate_initial_probability", 1e-3
+        ),
+        learned_intervention_gate_hard_threshold=getattr(
+            flags, "learned_intervention_gate_hard_threshold", 0.80
+        ),
+        learned_intervention_gate_temperature=getattr(
+            flags, "learned_intervention_gate_temperature", 1.0
+        ),
     )
-    return model.to(device=device)
+    model = model.to(device=device)
+    if getattr(flags, "spatial_risk_sidecar_enabled", False):
+        from ..rl_agent.learned_intervention_gate import SidecarLogitDeltaGate
+        from ..rl_agent.sidecar_agent_wrapper import SidecarAgentWrapper
+        from ..rl_agent.spatial_risk_sidecar import SpatialRiskAttentionSidecar
+        model = SidecarAgentWrapper(
+            model,
+            SpatialRiskAttentionSidecar(
+                in_channels=flags.hidden_dim,
+                attention_dim=getattr(flags, "spatial_risk_attention_dim", 64),
+                num_heads=getattr(flags, "spatial_risk_num_heads", 4),
+                pool_size=getattr(flags, "spatial_risk_pool_size", 8),
+            ).to(device),
+            SidecarLogitDeltaGate(
+                hidden_channels=getattr(flags, "sidecar_gate_hidden_channels", 16),
+            ).to(device),
+            risk_gate_enabled=getattr(flags, "risk_gate_enabled", False),
+            risk_thresholds=getattr(flags, "risk_thresholds", None),
+            safe_expansion_threshold=getattr(flags, "safe_expansion_threshold", 0.80),
+            logit_bias_lambda=getattr(flags, "logit_bias_lambda", 4.0),
+            freeze_base_agent=getattr(flags, "sidecar_freeze_base_agent", True),
+        ).to(device)
+    return model

@@ -1,6 +1,8 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import os
+import sys
+import types
 import warnings
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -12,6 +14,15 @@ warnings.filterwarnings("ignore", message=".*The version_base parameter is not s
 warnings.filterwarnings("ignore", message=".*Future Hydra versions will no longer change working directory.*")
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch.cuda.amp")
 warnings.filterwarnings("ignore", message=".*Creating a tensor from a list of numpy.ndarrays is extremely slow.*")
+
+# Gym 0.26 imports gym_notices only to print its end-of-life banner. The Lux
+# environment still depends on Gym, so suppress the banner without changing Gym.
+gym_notices = types.ModuleType("gym_notices")
+gym_notices_notices = types.ModuleType("gym_notices.notices")
+gym_notices_notices.notices = {}
+gym_notices.notices = gym_notices_notices
+sys.modules.setdefault("gym_notices", gym_notices)
+sys.modules.setdefault("gym_notices.notices", gym_notices_notices)
 
 # Silence "Loading environment football failed: No module named 'gfootball'" message
 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -43,6 +54,8 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags = OmegaConf.to_container(flags)
     # Env params
     flags.setdefault("seed", None)
+    flags.setdefault("total_games", None)
+    flags.setdefault("expected_steps_per_game", 400)
     flags.setdefault("num_buffers", max(2 * flags["num_actors"], flags["batch_size"] // flags["n_actor_envs"]))
     flags.setdefault("obs_space_kwargs", {})
     flags.setdefault("reward_space_kwargs", {})
@@ -57,6 +70,36 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags.setdefault("num_learner_threads", 1)
     flags.setdefault("use_teacher", False)
     flags.setdefault("teacher_baseline_cost", flags.get("teacher_kl_cost", 0.) / 2.)
+    flags.setdefault("teacher_bc_cost_start", 0.0)
+    flags.setdefault("teacher_bc_cost_end", 0.0)
+    flags.setdefault("teacher_bc_anneal_games", 1)
+    flags.setdefault("teacher_bc_game_offset", 0)
+    flags.setdefault("teacher_bc_worker_weight", 1.0)
+    flags.setdefault("teacher_bc_city_tile_weight", 1.0)
+    flags.setdefault("teacher_bc_cart_weight", 1.0)
+    flags.setdefault("rl_policy_cost", 1.0)
+    flags.setdefault("algo", "impala")
+    flags.setdefault("ppo_clip_ratio", 0.2)
+    flags.setdefault("reference_policy_kl_cost", flags.get("teacher_kl_cost", 0.0))
+    # Backward-compatible alias. New configs should use reference_policy_kl_cost.
+    flags["teacher_kl_cost"] = flags["reference_policy_kl_cost"]
+    flags.setdefault("normalize_policy_advantages", False)
+    flags.setdefault("policy_advantage_clip", None)
+    flags.setdefault("normalize_actor_critic_losses", False)
+    flags.setdefault("normalize_policy_log_probs_by_actions", False)
+    flags.setdefault("training_spatial_augmentation", False)
+    flags.setdefault("training_player_swap_probability", 0.0)
+    flags.setdefault("training_player_swap_per_sample", False)
+    flags.setdefault("use_aux_risk", False)
+    flags.setdefault("aux_risk_cost", 0.0)
+    flags.setdefault("aux_risk_horizon", 20)
+    flags.setdefault("aux_risk_hidden_channels", 128)
+    flags.setdefault("aux_risk_dropout", 0.10)
+    flags.setdefault("aux_risk_pos_weight_scale", 1.0)
+    flags.setdefault("aux_risk_threshold", 0.40)
+    flags.setdefault("spatial_risk_sidecar_checkpoint", None)
+    flags.setdefault("student_pretrain_checkpoint", None)
+    flags.setdefault("sidecar_freeze_base_agent", True)
 
     # Model params
     flags.setdefault("use_index_select", True)
@@ -73,6 +116,11 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags.setdefault("disable_wandb", False)
     flags.setdefault("debug", False)
     flags.setdefault("log_config", False)
+    flags.setdefault("log_detailed_stats", False)
+    flags.setdefault("console_log_interval", 30.0)
+    flags.setdefault("actor_start_timeout_seconds", 180.0)
+    flags.setdefault("rollout_queue_timeout_seconds", 300.0)
+    flags.setdefault("training_stall_timeout_seconds", 600.0)
     flags.setdefault("resume_from_local_config", False)
 
     return OmegaConf.create(flags)
@@ -100,8 +148,9 @@ def main(flags: DictConfig):
         logging.info(OmegaConf.to_yaml(flags, resolve=True))
     else:
         logging.info(
-            "Training %s | steps=%s | map=%s | actors=%s envs=%s | teacher=%s",
+            "Training %s | games=%s steps=%s | map=%s | actors=%s envs=%s | teacher=%s",
             flags.name,
+            flags.total_games,
             flags.total_steps,
             flags.env_configuration,
             flags.num_actors,

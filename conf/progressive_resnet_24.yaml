@@ -1,0 +1,5 @@
+defaults:
+  - conv_sidecar_bc_stage
+  - _self_
+n_blocks: 24
+name: progressive_resnet_24

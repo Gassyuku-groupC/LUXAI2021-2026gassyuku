@@ -27,6 +27,8 @@ reward_space_kwargs:
   unsafe_expansion: 8.0
 
 total_steps: 100000
+total_games: null
+expected_steps_per_game: 400
 num_actors: 1
 n_actor_envs: 2
 unroll_length: 16
@@ -55,6 +57,10 @@ entropy_cost: 0.00002
 baseline_cost: 1.
 teacher_kl_cost: 0.002
 teacher_baseline_cost: 0.0
+teacher_bc_cost_start: 1.0
+teacher_bc_cost_end: 0.05
+teacher_bc_anneal_games: 500
+teacher_bc_game_offset: 0
 lmb: 0.9
 reduction: sum
 
@@ -70,6 +76,8 @@ n_value_warmup_batches: 0
 actor_device: cuda:0
 learner_device: cuda:0
 model_log_freq: 1000
+log_detailed_stats: False
+console_log_interval: 30.0
 sharing_strategy: file_system
 disable_wandb: True
 debug: False
