@@ -1,5 +1,9 @@
 numpy<2
 scipy
+pandas
+scikit-learn
+joblib
+lightgbm
 gym==0.26.2
 kaggle-environments==1.8.12
 kaggle

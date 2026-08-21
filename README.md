@@ -1,233 +1,100 @@
-# LUXAI2021-2026gassyuku
+# Lux AI 2021 Runtime Scorer Gate Agent
 
-This repository is the Lux AI Season 1 / Lux AI 2021 experiment workspace for our group project. The current work does not rebuild the environment from scratch. Instead, it builds on the open-source first-place solution, then adds a local workflow for environment setup, GPU training, agent packaging, replay generation, and visualization.
+This repository contains a Lux AI 2021 runtime scorer gate agent. The root directory is directly runnable as an agent through `main.py`, and the repository also includes the minimal training/diagnostic scripts needed to rebuild the gate from replay data.
 
-## Project Origin
+## Package Contents
 
-This project is based on Isaiah Pressman's first-place Lux AI 2021 repository:
+- `main.py`: Lux CLI/Kaggle entry point.
+- `lux_ai/`: bundled agent source, Lux helper classes, model code, and runtime policy wrapper.
+- `lux_ai/rl_agent/candidate_weights.pt`: base neural policy checkpoint.
+- `lux_ai/rl_agent/strategy_scorers/`: lightweight risk scorers used by the runtime safety gate.
+- `lux_ai/rl_agent/rl_agent_config.yaml`: runtime configuration.
 
-- Original repository: https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021
-- Kaggle 1st place write-up: https://www.kaggle.com/c/lux-ai-2021/discussion/294993
+Generated replay files, evaluation outputs, training shards, and datasets are intentionally excluded from this package.
 
-The original repository provides a TorchBeast/IMPALA-style self-play reinforcement learning framework, Lux AI environment wrappers, neural network models, historical first-place agents, and replay analysis resources. This repository reorganizes that foundation for our group's local experiments while preserving attribution and the original license file.
+## Repository Layout
 
-## Current Goal
+- `main.py`: submission/runtime entry point.
+- `lux_ai/`: bundled runtime agent code.
+- `conf/`: selected training configuration files for the base RL pipeline and later survival/gate experiments.
+- `scripts/`: replay labeling, scorer training, dry-run gate validation, and evaluation helpers.
+- `requirements.txt`: Python dependencies used by the packaged workflow.
+- `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`: Lux AI 2021 local engine dependencies.
+- `METHODOLOGY.md`: method and architecture description for team documentation.
+- `TRAINING.md`: replay-label and scorer-training workflow.
 
-The current goal is to make our agent survive longer in Lux AI 2021 and gradually learn the balance between city expansion, mining, research, and self-play strategy from the first-place solution. Our priorities are:
+The repository intentionally does not include:
 
-1. Keep the full training, packaging, replay, and visualization pipeline reproducible.
-2. Use the first-place agent as a teacher for imitation learning and self-play finetuning.
-3. Start from 16x16 maps, then extend to 24x24, 32x32, and mixed map sizes.
-4. Prioritize surviving to 360 turns before optimizing win rate and final score.
+- downloaded Kaggle replay datasets
+- processed label CSVs or shards
+- local evaluation outputs
+- replay JSON outputs
+- historical failed experiment branches
 
-## Experiment History
+## Runtime Idea
 
-The detailed Japanese training log for v1-v7, including configurations, evaluation
-results, failure analysis, and checkpoint decisions, is available at
-[`docs/training_log_v1_v7_ja.md`](docs/training_log_v1_v7_ja.md).
+The agent keeps the original neural policy as the primary decision maker. A small diagnostic layer estimates late-game city-loss risk from scalar game-state features. The gate is intentionally conservative: it only intervenes on selected high-risk city-tile actions, currently focused on `BUILD_WORKER`, while leaving normal expansion and unit control to the base policy.
 
-## Verified Current Route
+For 12x12, 16x16, and 24x24 maps the gate uses one shared timing profile. For 32x32 maps, intervention is delayed because large maps continue to benefit from expansion for longer.
 
-We have completed one small-scale 16x16 teacher-finetuning run:
+## Dependencies
 
-- Map size: 16x16
-- Training steps: 100000
-- Checkpoint interval: every 10000 learner steps
-- Final weights: `100000_weights.pt`
-- Packaged agent: `local_agents/teacher_finetune_16x16_100000.zip`
-- Validation replay: `replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json`
+The packaged agent expects the Lux AI 2021 Python runtime plus the libraries used by the base neural agent. The risk scorer loader uses `joblib`; if scorer loading fails, the runtime gate is disabled and the base policy still runs.
 
-In the validation replay, the current agent defeated a public/reference opponent on a 16x16 map and expanded into multiple cities, many workers, and full uranium research. This result is the baseline for future research.
+Typical local environment:
 
-## Repository Structure
+```bash
+pip install torch numpy pyyaml joblib lightgbm
+```
+
+For local matches, install the Lux AI 2021 engine dependencies with the included Node package files.
+
+## Rebuilding The Gate
+
+After placing replay JSON files under a local dataset directory, the high-level workflow is:
+
+```bash
+python scripts/build_strategy_label_dataset.py --help
+python scripts/validate_strategy_labels.py --help
+python scripts/train_strategy_label_scorers.py --help
+python scripts/score_strategy_label_scorers.py --help
+```
+
+The generated scorer files should be copied into:
 
 ```text
-conf/
-  conv_teacher_finetune_16x16.yaml        Main current training config
-  conv_teacher_finetune_24x24.yaml        Future 24x24 map config
-  conv_teacher_finetune_32x32.yaml        Future 32x32 map config
-  conv_teacher_finetune_random_sizes.yaml Future mixed-size map config
-
-lux_ai/
-  lux/                                    Lux AI 2021 game objects and rules
-  lux_gym/                                Gym environment, action spaces, observation spaces, rewards
-  nns/                                    Neural network models
-  rl_agent/                               Agent inference code
-  torchbeast/                             IMPALA/TorchBeast training loop
-
-internal_testing/
-  hall_of_fame/                           Strong agents and teacher references from the base project
-  public_agents/                          Public/reference agents
-
-local_agents/
-  teacher_finetune_16x16_100000/          Current packaged agent source directory
-  teacher_finetune_16x16_100000.zip       Current uploadable/submittable agent package
-
-replays/
-  teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
-
-references/
-  kaggle_lux_ai_2021_top_results.md       Kaggle top-solution references
-  replay_validation_1st_place.md          Replay validation notes
-  visualization_and_training_guide.md     Training and visualization workflow
-  gpu_32x32_training.md                   GPU and large-map training notes
+lux_ai/rl_agent/strategy_scorers/
 ```
 
-`outputs/`, `.venv/`, and `node_modules/` are local training outputs and dependency directories. They are ignored by `.gitignore` and are not pushed as repository content.
-
-## Environment
-
-On Windows, the recommended workflow is to use the local virtual environment from PowerShell:
-
-```powershell
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-pnpm install
-```
-
-The official Lux AI CLI depends on Node.js. This repository uses `package.json` and `pnpm-lock.yaml` to pin the replay/visualization-related JavaScript dependencies.
-
-Docker can also be used:
-
-```powershell
-docker compose build
-docker compose run --rm luxai powershell
-```
-
-## Training
-
-Current main config:
-
-```powershell
-$env:WANDB_MODE="offline"
-.\.venv\Scripts\python.exe run_monobeast.py --config-name conv_survival_research_buffer2_finetune_16x16
-```
-
-Training entry path:
+The runtime behavior is configured in:
 
 ```text
-run_monobeast.py
-  -> lux_ai/torchbeast/monobeast.py
-  -> lux_ai/lux_gym/LuxEnv
-  -> official lux-ai-2021 engine
+lux_ai/rl_agent/rl_agent_config.yaml
 ```
 
-Local changes kept in this repository:
+## Local Match
 
-- Hydra configs can pass `env_configuration.width` and `env_configuration.height`.
-- Checkpoints are saved by learner-step interval instead of elapsed minutes.
-- Training logs are quieter by suppressing Gym/Hydra/CUDA warning noise.
-- `run_monobeast.py` does not automatically resume from a local `config.yaml` unless explicitly requested.
+From the Lux AI 2021 project root, this agent can be used as a player directory:
 
-### Automated self-play league
-
-The league controller trains in shorter game-count stages and evaluates every candidate from
-both player positions against the current best agent and the first-place agent.
-The v2 controller defaults to 100 completed games in 25-game stages, using two
-seeds. It starts the cumulative learner from the most stable v1 stage-100
-checkpoint while retaining the previous `best_agent` as the champion:
-
-```powershell
-Set-Location D:\Luxai\Kaggle_Lux_AI_2021
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\auto_train_league.ps1
+```bash
+lux-ai-2021 path/to/this/agent path/to/opponent --python python --seed 12345 --width 16 --height 16
 ```
 
-For a short external smoke run:
+## Actor-Sidecar Training
 
-```powershell
-.\scripts\auto_train_league.ps1 -TotalGames 20 -GamesPerStage 10 -Seeds 12345
-```
+The experimental training route keeps the legacy actor checkpoint compatible while adding a
+pooled-KV spatial risk sidecar and a zero-initialized logit-delta gate. The intended sequence is:
 
-Each stage writes its weights, stateful replay files, and `evaluation.json` under
-`outputs/auto_league_dagger_v2_16x16/`. Stage directories use names such as
-`game_stage_00025`. A candidate is promoted to `best_agent` only when
-all evaluation games survive to turn 360, the largest night-time city loss is at
-most six tiles, and the combined win rate is at least 50 percent. These thresholds
-can be adjusted near the end of `scripts/auto_train_league.ps1`.
+1. Build grouped replay shards with `scripts/extract_imitation_shards.py`.
+2. Jointly train the Actor and Sidecar with `scripts/train_spatial_risk_sidecar.py`.
+3. Continue with low-learning-rate KL-APPO using `conf/conv_sidecar_appo_vtrace.yaml` and a frozen reference policy.
 
-The training environment already uses the same policy for both players. The
-league layer adds model selection: candidate versus current best prevents
-regression, while candidate versus first place tracks the external performance
-gap. Stop the controller with `Ctrl+C`; completed stage directories and the
-current `best_agent` remain available.
+The BC trainer writes live CSV/JSONL metrics, rejects non-finite losses and gradients, filters
+expert actions that are illegal under the reconstructed action mask, and saves periodic recovery
+checkpoints. Local replay shards and model checkpoints remain excluded from Git.
 
-### Teacher BC and online DAgger
+## Notes
 
-The default league config is `conv_teacher_bc_dagger_v2_16x16`. On every state
-visited by the learner, the first-place teacher supplies hard targets for the
-complete worker, city-tile, and cart action spaces. The loss combines RL,
-teacher KL, and action-space-balanced behavior-cloning cross entropy. Worker,
-city-tile, and cart BC weights are `2.0`, `3.0`, and `0.5`; the BC cost anneals
-from `20.0` to `2.0` over 1,000 completed games, and RL policy loss is scaled by
-`0.1` during this imitation-heavy phase.
-
-Fuel buffer targets are expressed in complete nights. A value of `2.0` now
-means 20 survivable night turns, not two turns. The v2 reward checks the full
-30-turn day before night and applies stronger penalties to unsafe expansion and
-city-tile loss.
-
-Compact logs report BC loss and teacher-action accuracy for worker (`W`), city
-tile (`C`), and cart (`K`) at the current BC cost:
-
-```text
-Games 20/25 | steps 7808 | loss 18.42 | bc 12.31 W82/C96/K55 @ 19.64
-```
-
-The bundled Sazuma fourth-place imitation-learning notebook remains a useful
-reference for replay dataset construction. This project extends that idea by
-using the existing full action space and querying the teacher on learner-visited
-states instead of limiting supervision to five worker actions.
-
-## Agent Packaging
-
-The current usable agent package is:
-
-```text
-local_agents/teacher_finetune_16x16_100000.zip
-```
-
-The zip was rebuilt from:
-
-```text
-local_agents/teacher_finetune_16x16_100000/
-```
-
-`__pycache__` files were removed before packaging. The main model weights are:
-
-```text
-local_agents/teacher_finetune_16x16_100000/lux_ai/rl_agent/100000_weights.pt
-```
-
-## Replay and Visualization
-
-Current replay:
-
-```text
-replays/teacher_finetune_16x16_100000_vs_public_16x16_seed12345.json
-```
-
-It can be uploaded to the official Lux AI 2021 visualizer:
-
-```text
-https://2021vis.lux-ai.org/
-```
-
-The official local visualizer project is:
-
-```text
-https://github.com/Lux-AI-Challenge/LuxViewer2021
-```
-
-More commands and details are in `references/visualization_and_training_guide.md`.
-
-## Next Steps
-
-- Continue studying the first-place and other top solutions to improve city expansion, research timing, and fuel management.
-- Stabilize behavior on 16x16 before moving to 24x24 and 32x32.
-- Add a more systematic evaluation script across checkpoints, map sizes, seeds, and opponents.
-- After survival to 360 turns becomes more stable, optimize win rate, city count, and final score.
-
-## Attribution
-
-This project is based on `IsaiahPressman/Kaggle_Lux_AI_2021`. The original repository, training framework, model architecture, and many reference agents were created by Isaiah Pressman and contributors. This group project keeps that attribution while reorganizing the repository for local experiments, teacher finetuning, replay validation, and future group research.
+- The safest tournament fallback remains the base agent without the gate.
+- This gate package is intended for controlled experiments and solution demonstration.
+- 32x32 local evaluations can be slow, especially against CPU-heavy opponents.
