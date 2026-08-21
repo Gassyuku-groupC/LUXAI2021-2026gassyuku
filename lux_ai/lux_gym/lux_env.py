@@ -31,7 +31,6 @@ except Exception:
 NODE_BINARY = (
     os.environ.get("LUX_NODE_BINARY")
     or shutil.which("node")
-    or r"C:\Users\YE ZIHAN\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 )
 
 

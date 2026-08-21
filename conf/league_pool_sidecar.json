@@ -34,14 +34,6 @@
       "games": 0,
       "wins": 0,
       "night_loss_mean": 0.0
-    },
-    {
-      "name": "public_ilialar",
-      "agent_path": "external_agents/kaggle_public/ilialar_risk_averse/main.py",
-      "kind": "external",
-      "games": 0,
-      "wins": 0,
-      "night_loss_mean": 0.0
     }
   ]
 }

@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
-    [string]$CurrentAgent = "D:\Luxai\Kaggle_Lux_AI_2021\outputs\auto_league_learned_gate_v21_from_best\best_agent",
-    [string]$BestAgent = "D:\Luxai\Kaggle_Lux_AI_2021\outputs\submission_packages\best_agent",
-    [string]$FirstAgent = "D:\Luxai\Kaggle_Lux_AI_2021\internal_testing\hall_of_fame\11-24_12-56-23_062179520_must_research",
-    [string]$Stage400Agent = "D:\Luxai\Kaggle_Lux_AI_2021\outputs\auto_league_dagger_v7_16x16\best_agent",
-    [string]$Stage350Agent = "D:\Luxai\Kaggle_Lux_AI_2021\outputs\auto_league_dagger_v4_16x16\learner_agent",
+    [string]$CurrentAgent = "outputs\current_agent",
+    [string]$BestAgent = "outputs\submission_packages\best_agent",
+    [string]$FirstAgent = "internal_testing\hall_of_fame\11-24_12-56-23_062179520_must_research",
+    [string]$Stage400Agent = "outputs\auto_league_dagger_v7_16x16\best_agent",
+    [string]$Stage350Agent = "outputs\auto_league_dagger_v4_16x16\learner_agent",
+    [string]$NodeExe = "",
     [int[]]$Seeds = @(20260821),
     [int[]]$MapSizes = @(12, 24),
     [string[]]$OpponentNames = @("best_agent", "first", "stage350", "stage400"),
@@ -16,13 +17,28 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$LuxRoot = "D:\Luxai\Kaggle_Lux_AI_2021"
+$LuxRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $LuxRoot ".venv\Scripts\python.exe"
 $PythonDir = Split-Path -Parent $Python
-$NodeRoot = "C:\Users\YE ZIHAN\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin"
-$Node = Join-Path $NodeRoot "node.exe"
+if (-not $NodeExe) {
+    $nodeCommand = Get-Command node.exe -ErrorAction Stop
+    $NodeExe = $nodeCommand.Source
+}
+$Node = (Resolve-Path -LiteralPath $NodeExe).Path
+$NodeRoot = Split-Path -Parent $Node
 $LuxCli = Join-Path $LuxRoot "node_modules\@lux-ai\2021-challenge\lib\es5\bin\index.js"
 $Converter = Join-Path $LuxRoot "scripts\convert_replay_stateful.js"
+
+function Resolve-ProjectPath([string]$Path) {
+    if ([IO.Path]::IsPathRooted($Path)) { return $Path }
+    return Join-Path $LuxRoot $Path
+}
+
+$CurrentAgent = Resolve-ProjectPath $CurrentAgent
+$BestAgent = Resolve-ProjectPath $BestAgent
+$FirstAgent = Resolve-ProjectPath $FirstAgent
+$Stage400Agent = Resolve-ProjectPath $Stage400Agent
+$Stage350Agent = Resolve-ProjectPath $Stage350Agent
 
 if (-not [IO.Path]::IsPathRooted($OutputDir)) {
     $OutputDir = Join-Path (Split-Path -Parent $PSScriptRoot) $OutputDir

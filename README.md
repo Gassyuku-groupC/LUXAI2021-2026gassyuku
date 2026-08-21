@@ -1,100 +1,85 @@
-# Lux AI 2021 Runtime Scorer Gate Agent
+# Lux AI 2021 Actor-Sidecar Agent
 
-This repository contains a Lux AI 2021 runtime scorer gate agent. The root directory is directly runnable as an agent through `main.py`, and the repository also includes the minimal training/diagnostic scripts needed to rebuild the gate from replay data.
+This repository extends the open-source Lux AI 2021 first-place codebase with a replay-trained spatial risk sidecar and a KL-constrained APPO continuation stage. The current route starts from the first-place-era Actor weights, learns replay features with behavior cloning, and then performs low-learning-rate APPO + V-trace updates while a frozen `best_agent` supplies the reference policy.
 
-## Package Contents
+The repository contains code and configuration only. Replays, model weights, scorer artifacts, Hydra outputs, and local agents are intentionally excluded by `.gitignore`.
 
-- `main.py`: Lux CLI/Kaggle entry point.
-- `lux_ai/`: bundled agent source, Lux helper classes, model code, and runtime policy wrapper.
-- `lux_ai/rl_agent/candidate_weights.pt`: base neural policy checkpoint.
-- `lux_ai/rl_agent/strategy_scorers/`: lightweight risk scorers used by the runtime safety gate.
-- `lux_ai/rl_agent/rl_agent_config.yaml`: runtime configuration.
+## Current Architecture
 
-Generated replay files, evaluation outputs, training shards, and datasets are intentionally excluded from this package.
+```text
+observation
+  -> legacy 24-block ResNet Actor/Critic
+  -> actor feature map (detached at the sidecar boundary)
+  -> pooled-KV MHA spatial risk sidecar
+  -> risk and safe-expansion maps
+  -> zero-initialized additive logit-delta gate
+  -> legal-action mask
+  -> action selection
+```
+
+The training route is:
+
+```text
+expert replays
+  -> seed/replay-grouped shards
+  -> Actor + Sidecar behavior cloning
+  -> low-LR APPO + V-trace
+  -> frozen best_agent KL reference
+  -> paired replay evaluation before promotion
+```
+
+Key properties:
+
+- The legacy Actor parameter names remain checkpoint-compatible.
+- Pooled key/value attention uses `AdaptiveAvgPool2d((8, 8))`, so query cost scales as `H*W*64` instead of full `H*W` self-attention.
+- The final delta projection is zero-initialized; Step 0 policy logits match the base policy.
+- Illegal actions are masked after adding the delta.
+- Risk thresholds are calibrated independently for 12, 16, 24, and 32 maps.
+- Small-map and early-game phase rules protect expansion tempo.
+- APPO uses PPO clipping for policy optimization and V-trace/TD-lambda targets for asynchronous correction and critic learning.
+
+See [METHODOLOGY.md](METHODOLOGY.md) for design details and [TRAINING.md](TRAINING.md) for reproducible commands.
 
 ## Repository Layout
 
-- `main.py`: submission/runtime entry point.
-- `lux_ai/`: bundled runtime agent code.
-- `conf/`: selected training configuration files for the base RL pipeline and later survival/gate experiments.
-- `scripts/`: replay labeling, scorer training, dry-run gate validation, and evaluation helpers.
-- `requirements.txt`: Python dependencies used by the packaged workflow.
-- `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`: Lux AI 2021 local engine dependencies.
-- `METHODOLOGY.md`: method and architecture description for team documentation.
-- `TRAINING.md`: replay-label and scorer-training workflow.
-
-The repository intentionally does not include:
-
-- downloaded Kaggle replay datasets
-- processed label CSVs or shards
-- local evaluation outputs
-- replay JSON outputs
-- historical failed experiment branches
-
-## Runtime Idea
-
-The agent keeps the original neural policy as the primary decision maker. A small diagnostic layer estimates late-game city-loss risk from scalar game-state features. The gate is intentionally conservative: it only intervenes on selected high-risk city-tile actions, currently focused on `BUILD_WORKER`, while leaving normal expansion and unit control to the base policy.
-
-For 12x12, 16x16, and 24x24 maps the gate uses one shared timing profile. For 32x32 maps, intervention is delayed because large maps continue to benefit from expansion for longer.
-
-## Dependencies
-
-The packaged agent expects the Lux AI 2021 Python runtime plus the libraries used by the base neural agent. The risk scorer loader uses `joblib`; if scorer loading fails, the runtime gate is disabled and the base policy still runs.
-
-Typical local environment:
-
-```bash
-pip install torch numpy pyyaml joblib lightgbm
-```
-
-For local matches, install the Lux AI 2021 engine dependencies with the included Node package files.
-
-## Rebuilding The Gate
-
-After placing replay JSON files under a local dataset directory, the high-level workflow is:
-
-```bash
-python scripts/build_strategy_label_dataset.py --help
-python scripts/validate_strategy_labels.py --help
-python scripts/train_strategy_label_scorers.py --help
-python scripts/score_strategy_label_scorers.py --help
-```
-
-The generated scorer files should be copied into:
-
 ```text
-lux_ai/rl_agent/strategy_scorers/
+conf/
+  conv_sidecar_bc_stage.yaml
+  conv_sidecar_appo_vtrace.yaml
+  league_pool_sidecar.json
+  progressive_resnet_{8,16,24}.yaml
+
+lux_ai/rl_agent/
+  spatial_risk_sidecar.py
+  learned_intervention_gate.py
+  sidecar_agent_wrapper.py
+  gate_policy.py
+
+lux_ai/torchbeast/
+  monobeast.py
+  pfsp.py
+
+scripts/
+  replay generation, shard extraction, BC, spatial-risk calibration,
+  Step-0 verification, PFSP sampling, and checkpoint migration
 ```
 
-The runtime behavior is configured in:
+## Verified Training Status
 
-```text
-lux_ai/rl_agent/rl_agent_config.yaml
-```
+The 200-game mixed-map KL-APPO smoke run completed on 2026-08-22:
 
-## Local Match
+- 200 completed games and 70,560 learner steps
+- 12, 16, 24, and 32 map sampling enabled
+- no non-finite loss or gradient after the masked-logit and AMP fixes
+- throughput generally 25-30 SPS on the test machine
+- Actor tensors changed: 176/177
+- intervention-gate tensors changed: 8/8
+- all final checkpoint tensors finite
 
-From the Lux AI 2021 project root, this agent can be used as a player directory:
+The spatial risk sidecar remained unchanged during APPO because its risk outputs are deliberately detached before the intervention gate. It is learned in the replay/BC stage and treated as a fixed calibrated diagnostic during RL. The smoke run validates training mechanics, not competitive promotion; paired games against `best_agent`, first, stage350, and stage400 are still required.
 
-```bash
-lux-ai-2021 path/to/this/agent path/to/opponent --python python --seed 12345 --width 16 --height 16
-```
+The final CUDA IPC line printed during process shutdown is a worker cleanup warning. A run is considered complete only when the log contains `Learning finished` and the final checkpoint exists.
 
-## Actor-Sidecar Training
+## Attribution
 
-The experimental training route keeps the legacy actor checkpoint compatible while adding a
-pooled-KV spatial risk sidecar and a zero-initialized logit-delta gate. The intended sequence is:
-
-1. Build grouped replay shards with `scripts/extract_imitation_shards.py`.
-2. Jointly train the Actor and Sidecar with `scripts/train_spatial_risk_sidecar.py`.
-3. Continue with low-learning-rate KL-APPO using `conf/conv_sidecar_appo_vtrace.yaml` and a frozen reference policy.
-
-The BC trainer writes live CSV/JSONL metrics, rejects non-finite losses and gradients, filters
-expert actions that are illegal under the reconstructed action mask, and saves periodic recovery
-checkpoints. Local replay shards and model checkpoints remain excluded from Git.
-
-## Notes
-
-- The safest tournament fallback remains the base agent without the gate.
-- This gate package is intended for controlled experiments and solution demonstration.
-- 32x32 local evaluations can be slow, especially against CPU-heavy opponents.
+Based on [IsaiahPressman/Kaggle_Lux_AI_2021](https://github.com/IsaiahPressman/Kaggle_Lux_AI_2021) and its Lux AI 2021 first-place training stack. Original attribution and license terms remain applicable.

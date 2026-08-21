@@ -1,0 +1,6 @@
+defaults:
+  - conv_config
+  - _self_
+
+name: resume_config
+resume_from_local_config: true
