@@ -6,6 +6,7 @@ node_modules/
 errorlogs/
 run_monobeast.log
 *.log
+/config.yaml
 *.tmp
 .ipynb_checkpoints/
 

@@ -1,9 +1,39 @@
 defaults:
-  - conv_teacher_bc_dagger_v20_win_scale_gate
+  - conv_config
   - _self_
 
 name: conv_sidecar_bc_stage
 group: sidecar_bc_to_appo
+
+num_actors: 1
+n_actor_envs: 2
+batch_size: 2
+unroll_length: 16
+discounting: 0.999
+reduction: sum
+entropy_cost: 2.0e-05
+optimizer_kwargs:
+  lr: 3.0e-06
+  eps: 0.0003
+disable_wandb: true
+actor_device: cuda:0
+learner_device: cuda:0
+sharing_strategy: file_system
+use_mixed_precision: true
+checkpoint_freq: 10000
+num_learner_threads: 1
+normalize_actor_critic_losses: true
+normalize_policy_log_probs_by_actions: true
+training_spatial_augmentation: true
+training_player_swap_probability: 0.5
+training_player_swap_per_sample: true
+policy_advantage_clip: 3.0
+
+env_configuration:
+  width: 16
+  height: 16
+  loglevel: 0
+  trainingMapSizes: [12, 16, 24, 32]
 reward_space: LogScaleOutcomeReward
 reward_space_kwargs:
   outcome_weight: 0.80
@@ -19,6 +49,14 @@ gate_only_training: false
 sidecar_freeze_base_agent: false
 risk_gate_enabled: false
 spatial_risk_sidecar_checkpoint: null
+
+use_aux_risk: true
+aux_risk_cost: 0.010
+aux_risk_horizon: 20
+aux_risk_hidden_channels: 128
+aux_risk_dropout: 0.10
+aux_risk_pos_weight_scale: 0.75
+aux_risk_threshold: 0.40
 
 # Student starts from first; best_agent is never loaded into the student.
 load_dir: D:/Luxai/Kaggle_Lux_AI_2021/internal_testing/hall_of_fame/11-24_12-56-23_062179520_must_research/lux_ai/rl_agent
@@ -37,3 +75,8 @@ teacher_bc_cost_end: 1.0
 teacher_bc_anneal_games: 1
 rl_policy_cost: 0.0
 total_games: 5
+total_steps: 6400
+
+hydra:
+  run:
+    dir: outputs/sidecar_bc_stage/${now:%Y-%m-%d_%H-%M-%S}

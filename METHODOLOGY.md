@@ -1,132 +1,89 @@
-# Methodology And Architecture
+# Methodology
 
-## Methodology
+## Objective
 
-Our method starts from a strong reinforcement-learning agent and adds a non-intrusive runtime safety layer. The base neural policy remains the main decision maker. Instead of directly fine-tuning the actor, we mine replay data to train lightweight diagnostic models that estimate whether the current state is likely to lead to a large future city loss.
+The project aims to reproduce the strength of `best_agent` and then improve it without breaking legacy checkpoint compatibility. The adopted method separates strategic policy learning from spatial risk diagnosis:
 
-The motivation is that direct actor fine-tuning can easily damage a strong Lux AI policy. A small change in one worker or city-tile action can shift the future state distribution, and the policy may enter positions that the original agent rarely visited. In our experiments, behavior cloning and reward-only fine-tuning often reduced city loss in one dimension but also harmed expansion, unit count, or side stability. Therefore, we use a separate diagnostic layer as an external safety mechanism.
+- the Actor remains the primary policy;
+- a sidecar estimates tile-level future city-loss risk and safe expansion;
+- a narrow additive gate changes only selected policy logits;
+- low-learning-rate APPO updates are constrained by a frozen `best_agent` reference.
 
-The runtime gate follows three principles:
+## Replay Splitting And Calibration
 
-1. Preserve the base policy whenever risk is low.
-2. Intervene only in high-risk states predicted by the diagnostic scorer.
-3. Restrict the intervention scope to selected dangerous actions, currently focused on city-tile `BUILD_WORKER`.
+Replay samples are grouped by source replay and seed before train, validation, and calibration splitting. Frames from one replay must never be distributed across splits because adjacent Lux states are highly correlated.
 
-This makes the method different from a hand-written rule agent. The rule does not decide the full strategy. It only acts as a narrow safety filter around a learned RL policy.
+Raw external replay data is the main independent calibration source. Newly generated deployed-agent replays represent the target policy distribution and are used for training and evaluation. Calibration is performed separately for 12, 16, 24, and 32 maps. The 32-map deployed set receives lower weight when it is small, with raw replay groups supplying broader coverage.
 
-## Replay-Based Risk Learning
+For each map size, calibration reports:
 
-The diagnostic layer is trained from replay-derived labels. For every replay state, we extract scalar features such as:
+- replay/seed group count and frame count;
+- precision-recall curve and average precision;
+- the earliest threshold satisfying precision >= 0.85;
+- the configured deployment threshold.
 
-- map size and turn
-- day/night cycle
-- city tile count and unit count
-- worker-to-city ratio
-- fuel, upkeep, and fuel buffer statistics
-- low-fuel city counts
-- resource availability
+The current calibrated risk thresholds are:
 
-The main labels describe future risk:
+| Map | Risk threshold |
+| --- | ---: |
+| 12 | 0.9582753841 |
+| 16 | 0.9459641069 |
+| 24 | 0.9389875956 |
+| 32 | 0.8918934057 |
 
-- `risk_big_loss_20`: whether a large city loss occurs within a future window
-- `error_failed_big_loss`: whether the state is associated with both large loss and a bad final result
+## Spatial Risk Sidecar
 
-These labels allow the gate to focus on harmful city loss rather than treating every city loss as equally bad. This is important because Lux AI 2021 is decided by final city tiles and units, not directly by intermediate city loss.
+`SpatialRiskAttentionSidecar` is external to the legacy Actor state dictionary. It consumes `actor_features.detach()`, projects features to 64 channels, and forms full-resolution query tokens. Key/value tokens are generated with adaptive 8x8 pooling, followed by four-head cross-attention and spatial convolution. It outputs two `B x 2 x H x W` maps:
 
-## Runtime Architecture
+- future city-loss risk;
+- safe-expansion probability.
 
-```mermaid
-flowchart TD
-    A["Lux AI Observation<br/>game updates, map, units, city tiles, research"] --> B["Environment Wrappers<br/>FixedShapeContinuousObsV2<br/>pad board to 32x32"]
-    B --> C["Input Features<br/>spatial tensor: C x 32 x 32<br/>+ legal action masks"]
+The detached input prevents gradients from the sidecar training objective from modifying the legacy backbone. The fixed 64-token key/value sequence avoids quadratic full-board self-attention on 32x32 maps.
 
-    C --> D["Conv Embedding Input Layer<br/>embedding_dim=32<br/>hidden_dim=128"]
-    D --> E["Residual CNN Trunk x24<br/>conv_model<br/>5x5 kernels"]
+## Intervention Gate
 
-    subgraph RB["One Residual Block"]
-        RB1["5x5 Conv2d"] --> RB2["LeakyReLU"]
-        RB2 --> RB3["5x5 Conv2d"]
-        RB3 --> RB4["SE-Layer<br/>Squeeze-and-Excitation"]
-        RB4 --> RB5["Skip Connection<br/>x + residual"]
-        RB5 --> RB6["LeakyReLU"]
-    end
-
-    E --> F["Shared Spatial Feature Map<br/>128 x 32 x 32"]
-    F --> G["Actor Head Base<br/>1x1 Conv + SpectralNorm + ReLU"]
-    G --> H["DictActor Policy Heads<br/>1x1 Conv per action space"]
-    H --> I["Policy Logits<br/>worker and city-tile actions<br/>masked by legal actions"]
-
-    F --> J["Value Head Base<br/>1x1 Conv + SpectralNorm + ReLU"]
-    J --> K["Baseline Head<br/>masked average pooling<br/>Linear -> value"]
-
-    I --> L["Action Selection<br/>arg-sort logits, no sampling"]
-    L --> M["Collision / Legality Resolver"]
-
-    C --> N["Scalar Strategy Feature Extractor<br/>turn, map size, day/night,<br/>city tiles, units, fuel/upkeep,<br/>p25 fuel buffer, low-fuel cities"]
-    N --> O["LightGBM Risk Scorers<br/>all-map tabular models"]
-    O --> P["Risk Scores<br/>risk_big_loss_20<br/>error_failed_big_loss"]
-
-    M --> Q["Runtime Scorer Gate"]
-    P --> Q
-    Q --> R["Final Lux Actions"]
-    R --> S["Lux Engine"]
-```
-
-## Neural Policy
-
-The base policy is a ResNet-style actor-critic model trained with reinforcement learning. The packaged configuration uses:
+The gate produces an additive delta for selected actions, currently `worker/BUILD_CITY` and `city_tile/BUILD_WORKER`. The final operation is:
 
 ```text
-observation space: FixedShapeContinuousObsV2
-model_arch:       conv_model
-hidden_dim:       128
-embedding_dim:    32
-n_blocks:         24 residual blocks
-kernel_size:      5
-activation:       LeakyReLU
-residual module:  Conv2d -> LeakyReLU -> Conv2d -> SE-Layer -> skip connection -> LeakyReLU
-policy heads:     1x1 Conv actor heads for worker/city-tile action logits
-value head:       1x1 Conv base + masked average pooling + linear baseline
-runtime aug:      Rot180 test-time augmentation on small/medium maps
+final_logits = legal_mask(base_logits + gate_delta)
 ```
 
-The neural network keeps full two-dimensional board structure throughout the convolutional trunk. This is important in Lux AI because local topology matters: city adjacency, worker position, nearby resources, opponent pressure, and collision constraints all depend on spatial layout.
+The final projection starts with zero weights and bias, giving exact Step-0 equivalence. The safe-expansion signal has whitelist priority. Dynamic activation rules are:
 
-The actor head outputs logits for each action space and board location. Legal-action masks are applied before action selection, and the resolver then handles collision and preference ordering. The value head is used by the RL training pipeline as the baseline estimator.
+- 12x12 and 16x16: disabled before turn 120; afterward active only when `turn % 40` is 25 through 29;
+- 24x24: disabled for player 0 before turn 80;
+- 32x32: active under its independently calibrated threshold.
 
-## Gate Logic
+The spatial risk logits are detached at the gate boundary during APPO. This is intentional: APPO can learn how strongly to intervene without corrupting the independently calibrated risk estimator. Sidecar weights are updated during replay supervision/BC, then fixed during KL-APPO.
 
-The gate does not replace this neural policy. If the scorer files are missing or fail to load, the system falls back to the base policy.
+## Behavior Cloning
 
-```mermaid
-flowchart TD
-    A["Actor proposes action<br/>example: BUILD_WORKER"] --> B{"Gate active?<br/>map / turn / night timing"}
-    B -- "no" --> Z["keep actor action"]
-    B -- "yes" --> C{"Risk scorer high?<br/>risk_big_loss_20 >= threshold<br/>or error_failed_big_loss >= threshold"}
-    C -- "no" --> Z
-    C -- "yes" --> D{"Action in gate target list?<br/>currently BUILD_WORKER"}
-    D -- "no" --> Z
-    D -- "yes" --> E["mark action unsafe<br/>remove from final candidates"]
-    E --> F["resolver selects next legal action"]
-```
+The student starts from the historical first-place Actor checkpoint. Expert replay shards supervise policy actions and spatial-risk targets. Invalid expert targets are removed using the legal-action mask before cross-entropy. Training and validation are split by replay group rather than frame.
 
-At inference time, the scorer is evaluated once per turn. If predicted risk is below threshold, the base policy action is used unchanged. If risk is high, the gate marks selected dangerous actions as illegal before final action resolution.
+BC checkpoints contain the combined Actor, Sidecar, and Gate state. The number of epochs is selected by grouped validation convergence rather than fixed at five. Training stops or rolls back on non-finite loss, non-finite gradients, or worsening validation loss.
 
-Current intervention target:
+## KL-APPO + V-trace
 
-```text
-BUILD_WORKER
-```
+The RL stage uses:
 
-The gate is map-size aware. For 12x12, 16x16, and 24x24 maps it uses a shared timing profile. For 32x32 maps, intervention is delayed because large maps benefit from expansion for longer.
+- PPO clipped surrogate policy loss;
+- V-trace importance correction for asynchronous rollouts;
+- TD-lambda critic targets;
+- a frozen `best_agent` teacher with `KL(pi_student || pi_ref)`;
+- terminal outcome weight 0.80 and logarithmic city/unit scale shaping;
+- optional PFSP opponent sampling from best, historical, baseline, and external agents.
 
-## Future Extension
+The default APPO learning rate is `1e-6` and the reference KL cost is `0.005`. Teacher BC is annealed from `0.10` to zero over 500 games. Mixed precision uses an initial gradient scale of 16 because the original `65536` scale overflowed the sum-reduced value loss.
 
-The current gate threshold is manually configured. A natural next step is to learn the gate decision itself:
+## Promotion Criteria
 
-- train an action-level intervention classifier from replay outcomes
-- optimize thresholds on held-out seeds
-- use offline contextual bandit learning to decide whether blocking an action improves final win/city outcome
-- keep a KL/behavior anchor to the base policy during any further RL adaptation
+A successful training run is not automatically a promoted agent. Promotion requires paired fixed-seed evaluation on both sides and all four map sizes against `best_agent`, first, stage350, and stage400. Report at least:
 
-This would preserve the current architecture while reducing manual threshold tuning.
+- win rate;
+- final city-tile and unit margins;
+- worst-night city loss;
+- BUILD_CITY frequency;
+- side-specific performance;
+- timeout or invalid replay count.
+
+The 200-game smoke run validates finite optimization and checkpoint updates only. It does not yet establish parity with or superiority over `best_agent`.

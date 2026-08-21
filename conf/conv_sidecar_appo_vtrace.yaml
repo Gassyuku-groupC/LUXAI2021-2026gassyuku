@@ -28,3 +28,7 @@ logit_bias_lambda: 4.0
 student_pretrain_checkpoint: D:/Luxai/Kaggle_Lux_AI_2021/outputs/first_actor_sidecar_bc_v3/best.pt
 weights_only: true
 total_games: 2000
+
+hydra:
+  run:
+    dir: outputs/sidecar_appo_vtrace/${now:%Y-%m-%d_%H-%M-%S}

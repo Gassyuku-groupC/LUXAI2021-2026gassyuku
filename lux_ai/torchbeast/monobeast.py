@@ -224,8 +224,14 @@ def combine_policy_logits_to_log_probs(
     Initial shape: time, batch, 1, players, x, y, n_actions
     Returned shape: time, batch, players
     """
-    # Get the action probabilities
-    probs = F.softmax(behavior_policy_logits, dim=-1)
+    # All-masked rows contain -inf. Keep those rows finite through softmax so
+    # their masked-out backward pass cannot create NaN gradients.
+    safe_policy_logits = torch.where(
+        torch.isfinite(behavior_policy_logits),
+        behavior_policy_logits,
+        torch.full_like(behavior_policy_logits, -1e4),
+    )
+    probs = F.softmax(safe_policy_logits, dim=-1)
     # Ignore probabilities for actions that were not used
     probs = actions_taken_mask * probs
     # Select the probabilities for actions that were taken by stacked agents and sum these
@@ -281,14 +287,14 @@ def combine_policy_entropy(
     Initial shape: time, batch, action_planes, players, x, y, n_actions
     Returned shape: time, batch, players
     """
-    policy = F.softmax(policy_logits, dim=-1)
-    log_policy = F.log_softmax(policy_logits, dim=-1)
-    log_policy_masked_zeroed = torch.where(
-        log_policy.isneginf(),
-        torch.zeros_like(log_policy),
-        log_policy
+    safe_policy_logits = torch.where(
+        torch.isfinite(policy_logits),
+        policy_logits,
+        torch.full_like(policy_logits, -1e4),
     )
-    entropies = (policy * log_policy_masked_zeroed).sum(dim=-1)
+    policy = F.softmax(safe_policy_logits, dim=-1)
+    log_policy = F.log_softmax(safe_policy_logits, dim=-1)
+    entropies = (policy * log_policy).sum(dim=-1)
     assert actions_taken_mask.shape == entropies.shape
     entropies_masked = entropies * actions_taken_mask.float()
     # Sum over y, x, and action_planes dimensions to combine entropies from different actions
@@ -329,8 +335,13 @@ def compute_teacher_bc_loss(
     """Hard behavior cloning from the teacher on learner-visited states."""
     teacher_actions = teacher_policy_logits.detach().argmax(dim=-1)
     n_actions = learner_policy_logits.shape[-1]
+    learner_safe_logits = torch.where(
+        torch.isfinite(learner_policy_logits),
+        learner_policy_logits,
+        torch.full_like(learner_policy_logits, -1e4),
+    )
     cross_entropy = F.cross_entropy(
-        learner_policy_logits.reshape(-1, n_actions),
+        learner_safe_logits.reshape(-1, n_actions),
         teacher_actions.reshape(-1),
         reduction="none",
     ).view_as(teacher_actions)
@@ -950,12 +961,24 @@ def learn(
                     grad_params = [p for p in learner_model.parameters() if p.requires_grad]
                     if aux_risk_head is not None:
                         grad_params += list(aux_risk_head.parameters())
-                    if not all(
-                        parameter.grad is None or torch.isfinite(parameter.grad).all()
-                        for parameter in grad_params
-                    ):
+                    bad_gradients = [
+                        (name, int((~torch.isfinite(parameter.grad)).sum().item()))
+                        for name, parameter in learner_model.named_parameters()
+                        if parameter.requires_grad
+                        and parameter.grad is not None
+                        and not torch.isfinite(parameter.grad).all()
+                    ]
+                    if aux_risk_head is not None:
+                        bad_gradients.extend(
+                            (f"aux_risk_head.{name}", int((~torch.isfinite(parameter.grad)).sum().item()))
+                            for name, parameter in aux_risk_head.named_parameters()
+                            if parameter.grad is not None
+                            and not torch.isfinite(parameter.grad).all()
+                        )
+                    if bad_gradients:
                         raise FloatingPointError(
-                            f"Non-finite learner gradient at games={total_games_played}"
+                            f"Non-finite learner gradient at games={total_games_played}: "
+                            f"{bad_gradients[:20]}"
                         )
                     torch.nn.utils.clip_grad_norm_(grad_params, flags.clip_grads)
                 grad_scaler.step(optimizer)
@@ -1130,7 +1153,11 @@ def train(flags):
         scaled_pct_complete = pct_complete * (1. - min_pct)
         return 1. - scaled_pct_complete
 
-    grad_scaler = torch.amp.GradScaler("cuda", enabled=flags.use_mixed_precision)
+    grad_scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=flags.use_mixed_precision,
+        init_scale=float(flags.amp_init_scale),
+    )
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     if checkpoint_state is not None and not flags.weights_only:
         if "scheduler_state_dict" in checkpoint_state:

@@ -63,6 +63,7 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
 
     # Training params
     flags.setdefault("use_mixed_precision", True)
+    flags.setdefault("amp_init_scale", 16.0)
     flags.setdefault("discounting", 0.999)
     flags.setdefault("reduction", "mean")
     flags.setdefault("clip_grads", 10.)

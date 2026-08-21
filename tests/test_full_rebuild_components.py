@@ -7,7 +7,13 @@ from lux_ai.lux_gym.act_spaces import ACTION_MEANINGS, ACTION_MEANINGS_TO_IDX
 from lux_ai.lux_gym.reward_spaces import LogScaleOutcomeReward
 from lux_ai.rl_agent.learned_intervention_gate import SidecarLogitDeltaGate
 from lux_ai.rl_agent.sidecar_agent_wrapper import SidecarAgentWrapper
-from lux_ai.torchbeast.monobeast import compute_appo_policy_loss, compute_teacher_kl_loss
+from lux_ai.torchbeast.monobeast import (
+    combine_policy_entropy,
+    combine_policy_logits_to_log_probs,
+    compute_appo_policy_loss,
+    compute_teacher_bc_loss,
+    compute_teacher_kl_loss,
+)
 from lux_ai.torchbeast.pfsp import LeagueOpponent, PFSPOpponentSampler
 
 
@@ -51,6 +57,29 @@ class FullRebuildComponentsTest(unittest.TestCase):
         logits = torch.tensor([[[[[[1.0, -1.0]]]]]])
         mask = torch.ones(logits.shape[:-1], dtype=torch.bool)
         self.assertAlmostEqual(compute_teacher_kl_loss(logits, logits, mask).item(), 0.0, places=6)
+
+    def test_all_masked_policy_rows_have_finite_gradients(self):
+        shape = (2, 1, 1, 2, 2, 2, 3)
+        source = torch.randn(shape, requires_grad=True)
+        legal_rows = torch.zeros(shape[:-1], dtype=torch.bool)
+        legal_rows[..., 0, 0] = True
+        logits = source.masked_fill(~legal_rows.unsqueeze(-1), float("-inf"))
+        actions = torch.zeros((*shape[:-1], 1), dtype=torch.long)
+        actions_taken = torch.zeros((*shape[:-1], 1), dtype=torch.bool)
+        actions_taken[..., 0, 0, 0] = True
+        any_actions_taken = actions_taken.any(dim=-1)
+
+        loss = combine_policy_logits_to_log_probs(logits, actions, actions_taken).sum()
+        loss = loss + combine_policy_entropy(logits, any_actions_taken).sum()
+        loss = loss + compute_teacher_bc_loss(
+            logits,
+            logits.detach(),
+            any_actions_taken,
+        )[0].sum()
+        loss.backward()
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(source.grad).all())
 
     def test_pfsp_prioritizes_hard_and_night_loss(self):
         easy = LeagueOpponent("easy", "easy.py", games=20, wins=18)
