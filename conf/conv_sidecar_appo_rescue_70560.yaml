@@ -1,0 +1,30 @@
+defaults:
+  - conv_sidecar_appo_vtrace
+  - _self_
+
+name: conv_sidecar_appo_rescue_70560
+group: sidecar_appo_rescue
+
+# Start from the strongest 200-game policy while resetting the decayed optimizer.
+load_dir: D:/Luxai/Kaggle_Lux_AI_2021
+checkpoint_file: 70560_weights.pt
+weights_only: true
+student_pretrain_checkpoint: null
+
+optimizer_kwargs:
+  lr: 1.0e-06
+  eps: 0.0003
+reference_policy_kl_cost: 0.01
+
+# Keep best_agent imitation active throughout this short rescue stage.
+teacher_bc_cost_start: 0.10
+teacher_bc_cost_end: 0.05
+teacher_bc_anneal_games: 100
+teacher_bc_game_offset: 0
+
+# Four of six entries target the small maps that regressed in phase 1.
+env_configuration:
+  trainingMapSizes: [12, 12, 16, 16, 24, 32]
+  trainingMapSampling: random
+
+total_games: 100

@@ -165,6 +165,7 @@ def main() -> None:
     parser.add_argument("--pool-size", type=int, default=8)
     parser.add_argument("--tolerance", type=float, default=1e-7)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--wrapper-checkpoint", type=Path)
     args = parser.parse_args()
 
     map_sizes = [int(part.strip()) for part in args.map_sizes.split(",") if part.strip()]
@@ -188,6 +189,14 @@ def main() -> None:
     ).to(device)
     gate = SidecarLogitDeltaGate().to(device)
     wrapper = SidecarAgentWrapper(base_agent, sidecar, gate).to(device).eval()
+    if args.wrapper_checkpoint is not None:
+        wrapper_checkpoint = torch.load(
+            args.wrapper_checkpoint,
+            map_location=device,
+            weights_only=False,
+        )
+        wrapper.load_state_dict(wrapper_checkpoint["model_state_dict"], strict=True)
+        wrapper._base_state_hash = state_dict_sha256(wrapper.base_agent.state_dict())
     replay_paths = find_replays(args.replay_root, map_sizes)
 
     map_results = {}

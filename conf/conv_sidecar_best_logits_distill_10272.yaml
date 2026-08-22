@@ -1,0 +1,34 @@
+defaults:
+  - conv_sidecar_appo_vtrace
+  - _self_
+
+name: conv_sidecar_best_logits_distill_10272
+group: sidecar_best_logits_distill
+
+# Preserve the 24x24-capable rescue peak and reset its decayed optimizer.
+load_dir: D:/Luxai/Kaggle_Lux_AI_2021/outputs/sidecar_appo_rescue_70560
+checkpoint_file: 10272_weights.pt
+weights_only: true
+student_pretrain_checkpoint: null
+
+optimizer_kwargs:
+  lr: 1.0e-06
+  eps: 0.0003
+
+# Pure best-agent distillation: no on-policy policy-gradient update.
+rl_policy_cost: 0.0
+baseline_cost: 0.0
+entropy_cost: 0.0
+aux_risk_cost: 0.0
+reference_policy_kl_cost: 0.01
+teacher_bc_cost_start: 0.50
+teacher_bc_cost_end: 0.50
+teacher_bc_anneal_games: 1
+teacher_bc_game_offset: 0
+
+env_configuration:
+  trainingMapSizes: [12, 16]
+  trainingMapSampling: balanced_cycle
+
+checkpoint_freq: 3000
+total_games: 20

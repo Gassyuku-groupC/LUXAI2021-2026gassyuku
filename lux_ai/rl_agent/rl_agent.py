@@ -15,6 +15,8 @@ import yaml
 
 from . import data_augmentation
 from .gate_policy import RuntimeGatePolicy
+from .role_assignment import RoleAssignmentConfig
+from .role_city_adapter import RoleCityAdapter
 from ..lux_gym import create_reward_space, LuxEnv, wrappers
 from ..lux_gym.act_spaces import ACTION_MEANINGS
 from ..utils import DEBUG_MESSAGE, RUNTIME_DEBUG_MESSAGE, LOCAL_EVAL
@@ -59,7 +61,13 @@ class RLAgent:
         with open(MODEL_CONFIG_PATH, 'r') as f:
             self.model_flags = flags_to_namespace(yaml.safe_load(f))
         with open(RL_AGENT_CONFIG_PATH, 'r') as f:
-            self.agent_flags = SimpleNamespace(**yaml.safe_load(f))
+            agent_config = yaml.safe_load(f) or {}
+            self.agent_flags = SimpleNamespace(**agent_config)
+        self.role_assignment_config = RoleAssignmentConfig.from_mapping(
+            agent_config.get("role_assignment"),
+            base_dir=RL_AGENT_CONFIG_PATH.parent,
+        )
+        self.role_city_adapter = RoleCityAdapter.from_config(self.role_assignment_config)
         torch_num_threads = int(getattr(self.agent_flags, "runtime_torch_num_threads", 1))
         if torch_num_threads > 0:
             torch.set_num_threads(torch_num_threads)
@@ -306,6 +314,16 @@ class RLAgent:
 
         self.stopwatch.start("Observation processing")
         self.preprocess(obs, conf)
+        role_snapshot = self.role_city_adapter.update(
+            game_state=self.game_state,
+            player=self.me,
+            opponent=self.opp,
+        )
+        if role_snapshot is not None and self.role_assignment_config.dry_run_logging:
+            DEBUG_MESSAGE(role_snapshot.summary(
+                max_units=self.role_assignment_config.max_log_units,
+                max_cities=self.role_assignment_config.max_log_cities,
+            ))
         env_output = self.get_env_output()
         relevant_env_output_augmented = {
             "obs": self.augment_data(env_output["obs"], is_policy=False),
@@ -324,6 +342,16 @@ class RLAgent:
                 "policy_logits": self.aggregate_augmented_predictions(agent_output_augmented["policy_logits"]),
                 "baseline": agent_output_augmented["baseline"].mean(dim=0, keepdim=True).cpu()
             }
+            agent_output["policy_logits"] = self.role_city_adapter.apply(
+                game_state=self.game_state,
+                player=self.me,
+                opponent=self.opp,
+                actionable_workers=self.loc_to_actionable_workers,
+                actionable_city_tiles=self.loc_to_actionable_city_tiles,
+                policy_logits=agent_output["policy_logits"],
+                available_actions_mask=env_output["info"]["available_actions_mask"],
+                player_id=obs.player,
+            )
             agent_output["actions"] = {
                 key: models.DictActor.logits_to_actions(
                     torch.flatten(val, start_dim=0, end_dim=-2),

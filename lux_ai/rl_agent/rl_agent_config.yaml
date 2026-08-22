@@ -51,3 +51,13 @@ data_augmentations:
   #- Rot90
   - Rot180
   #- Rot270
+
+role_assignment:
+  enabled: false
+  dry_run_logging: false
+  bias_enabled: false
+  learnable_biases: false
+  bias_params_path: role_city_bias_params.yaml
+  annotate_summary: false
+  cooldown_turns: 5
+  firefighter_override_cooldown: true
