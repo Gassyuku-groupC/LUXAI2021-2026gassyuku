@@ -40,7 +40,7 @@ Key properties:
 
 See [METHODOLOGY.md](METHODOLOGY.md) for design details and [TRAINING.md](TRAINING.md) for reproducible commands.
 See [ROLE.md](ROLE.md) for the optional role and city adapter, its Lux action
-constraints, initial A/B evidence, and staged learning path.
+constraints, bounded multi-map runtime, replay overlay, and staged learning path.
 
 ## Repository Layout
 
@@ -66,6 +66,9 @@ lux_ai/torchbeast/
 scripts/
   replay generation, shard extraction, BC, spatial-risk calibration,
   Step-0 verification, PFSP sampling, and checkpoint migration
+
+tools/role_replay_viewer/
+  offline stateful replay viewer with role and city color overlays
 ```
 
 ## Verified Training Status

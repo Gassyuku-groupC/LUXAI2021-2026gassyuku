@@ -1,14 +1,22 @@
 from types import SimpleNamespace
 import unittest
 
+import numpy as np
 import torch
 
 from lux_ai.lux.constants import Constants
 from lux_ai.lux.game_map import GameMap
 from lux_ai.lux.game_objects import City, Player, Unit
 from lux_ai.lux_gym.act_spaces import ACTION_MEANINGS, ACTION_MEANINGS_TO_IDX
-from lux_ai.rl_agent.role_assignment import RoleAssignmentConfig, RoleCityBiasParams
-from lux_ai.rl_agent.role_city_adapter import RoleCityAdapter, pos_to_loc
+from lux_ai.rl_agent.role_assignment import (
+    ATTACKER,
+    BUILDER,
+    FIREFIGHTER,
+    HARVESTER,
+    RoleAssignmentConfig,
+    RoleCityBiasParams,
+)
+from lux_ai.rl_agent.role_city_adapter import ROLE_BIAS_PRIORITY, RoleCityAdapter, pos_to_loc
 from lux_ai.rl_agent.trainable_role_bias import ROLE_BIAS_INDEX, TrainableRoleBiasLayer
 
 
@@ -74,6 +82,62 @@ class RoleCityAdapterTests(unittest.TestCase):
 
         self.assertIs(output, logits)
 
+    def test_bias_activation_respects_map_and_player_fallbacks(self):
+        config = RoleAssignmentConfig(
+            enabled=True,
+            bias_enabled=True,
+            bias_disabled_map_sizes=(),
+            bias_disabled_players_by_map={},
+            bias_scale_by_map_size={12: 0.35, 16: 1.0, 24: 0.35, 32: 0.25},
+            max_biased_workers_by_map_size={12: 32, 16: 64, 24: 64, 32: 64},
+            safety_only_map_sizes=(12, 24, 32),
+        )
+
+        self.assertTrue(config.bias_active_for(12, 0))
+        self.assertTrue(config.bias_active_for(16, 0))
+        self.assertTrue(config.bias_active_for(24, 0))
+        self.assertTrue(config.bias_active_for(24, 1))
+        self.assertTrue(config.bias_active_for(32, 1))
+        self.assertEqual(config.bias_scale_for(24), 0.35)
+        self.assertEqual(config.max_biased_workers_for(32), 64)
+        self.assertTrue(config.safety_only_for(24))
+        self.assertFalse(config.safety_only_for(16))
+
+    def test_attacker_is_last_role_bias_priority(self):
+        self.assertEqual(
+            sorted(ROLE_BIAS_PRIORITY, key=ROLE_BIAS_PRIORITY.get),
+            [FIREFIGHTER, BUILDER, HARVESTER, ATTACKER],
+        )
+
+    def test_cooldown_uses_compact_arrays_and_skips_reassignment(self):
+        game = self.make_game(turn=10)
+        player, opponent = Player(0), Player(1)
+        self.add_worker(player, "u0", 1, 1)
+        adapter = RoleCityAdapter.from_config(RoleAssignmentConfig(enabled=True))
+        first = adapter.update(game_state=game, player=player, opponent=opponent)
+
+        game.turn = 11
+        self.add_worker(opponent, "e0", 2, 1)
+        second = adapter.update(game_state=game, player=player, opponent=opponent)
+
+        self.assertIsInstance(adapter.state.role_codes, np.ndarray)
+        self.assertEqual(second.unit_roles["u0"].role, first.unit_roles["u0"].role)
+        self.assertEqual(second.unit_roles["u0"].reason, "cooldown_reuse")
+
+    def test_update_budget_reuses_previous_snapshot_for_one_turn(self):
+        game = self.make_game(turn=10)
+        player, opponent = Player(0), Player(1)
+        self.add_worker(player, "u0", 1, 1)
+        adapter = RoleCityAdapter.from_config(
+            RoleAssignmentConfig(enabled=True, update_time_budget_seconds=0.0)
+        )
+        first = adapter.update(game_state=game, player=player, opponent=opponent)
+        game.turn = 11
+        second = adapter.update(game_state=game, player=player, opponent=opponent)
+
+        self.assertIs(second, first)
+        self.assertTrue(adapter.last_update_degraded)
+
     def test_learnable_bias_receives_gradient(self):
         game = self.make_game(turn=10)
         player, opponent = Player(0), Player(1)
@@ -135,6 +199,34 @@ class RoleCityAdapterTests(unittest.TestCase):
 
         illegal = ~worker_mask
         self.assertTrue(torch.isneginf(output["worker"][illegal]).all())
+
+    def test_safety_only_map_does_not_bias_harvester(self):
+        game = self.make_game(turn=10)
+        player, opponent = Player(0), Player(1)
+        worker = self.add_worker(player, "u0", 1, 1)
+        game.map._setResource("wood", 1, 1, 500)
+        adapter = RoleCityAdapter.from_config(
+            RoleAssignmentConfig(
+                enabled=True,
+                bias_enabled=True,
+                safety_only_map_sizes=(12,),
+            )
+        )
+        adapter.update(game_state=game, player=player, opponent=opponent)
+        logits, masks = self.make_policy()
+
+        output = adapter.apply(
+            game_state=game,
+            player=player,
+            opponent=opponent,
+            actionable_workers={pos_to_loc(worker.pos.astuple()): [worker]},
+            actionable_city_tiles={},
+            policy_logits=logits,
+            available_actions_mask=masks,
+            player_id=0,
+        )
+
+        self.assertEqual(torch.count_nonzero(output["worker"]).item(), 0)
 
     def test_firefighter_transfer_only_biases_adjacent_relay_toward_city(self):
         game = self.make_game(turn=20)

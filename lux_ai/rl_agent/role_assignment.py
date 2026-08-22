@@ -2,6 +2,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
 import yaml
 
 from ..lux.game_constants import GAME_CONSTANTS
@@ -19,6 +20,9 @@ FUEL_STATION = "FuelStation"
 RESEARCH_STATION = "ResearchStation"
 MANUFACTURING_POINT = "ManufacturingPoint"
 SACRIFICIAL_DECAY = "SacrificialDecay"
+
+UNIT_ROLE_NAMES = (HARVESTER, BUILDER, ATTACKER, FIREFIGHTER)
+UNIT_ROLE_TO_CODE = {name: index for index, name in enumerate(UNIT_ROLE_NAMES)}
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,12 @@ class RoleAssignmentConfig:
     max_log_units: int = 8
     max_log_cities: int = 8
     annotate_summary: bool = False
+    bias_disabled_map_sizes: Sequence[int] = field(default_factory=tuple)
+    bias_disabled_players_by_map: Mapping[int, Sequence[int]] = field(default_factory=dict)
+    bias_scale_by_map_size: Mapping[int, float] = field(default_factory=dict)
+    max_biased_workers_by_map_size: Mapping[int, int] = field(default_factory=dict)
+    safety_only_map_sizes: Sequence[int] = field(default_factory=tuple)
+    update_time_budget_seconds: float = 1.5
     bias_params: RoleCityBiasParams = field(default_factory=RoleCityBiasParams)
 
     @classmethod
@@ -123,6 +133,29 @@ class RoleAssignmentConfig:
         data["bias_params"] = self.bias_params.to_mapping()
         return data
 
+    def bias_active_for(self, map_size: int, player_id: int) -> bool:
+        if map_size in {int(size) for size in self.bias_disabled_map_sizes}:
+            return False
+        disabled_players = self.bias_disabled_players_by_map.get(map_size)
+        if disabled_players is None:
+            disabled_players = self.bias_disabled_players_by_map.get(str(map_size), ())
+        return player_id not in {int(value) for value in disabled_players}
+
+    def bias_scale_for(self, map_size: int) -> float:
+        value = self.bias_scale_by_map_size.get(map_size)
+        if value is None:
+            value = self.bias_scale_by_map_size.get(str(map_size), 1.0)
+        return max(float(value), 0.0)
+
+    def max_biased_workers_for(self, map_size: int) -> int:
+        value = self.max_biased_workers_by_map_size.get(map_size)
+        if value is None:
+            value = self.max_biased_workers_by_map_size.get(str(map_size), 10**9)
+        return max(int(value), 0)
+
+    def safety_only_for(self, map_size: int) -> bool:
+        return map_size in {int(size) for size in self.safety_only_map_sizes}
+
 
 @dataclass(frozen=True)
 class UnitRoleAssignment:
@@ -147,8 +180,9 @@ class CitySpecialization:
 
 @dataclass
 class RoleState:
-    role_by_unit_id: Dict[str, str] = field(default_factory=dict)
-    last_change_turn_by_unit_id: Dict[str, int] = field(default_factory=dict)
+    unit_ids: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=object))
+    role_codes: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int8))
+    cooldown_expiry: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int16))
 
 
 @dataclass(frozen=True)
@@ -195,9 +229,12 @@ def assign_roles(
         state: RoleState,
         config: RoleAssignmentConfig,
         risk_blocked_positions: Optional[Iterable[Tuple[int, int]]] = None,
+        fuel_positions: Optional[Sequence[Position]] = None,
 ) -> RoleAssignmentSnapshot:
     risk_blocked_positions = set(risk_blocked_positions or ())
-    city_roles = classify_city_specializations(game_state, player, config)
+    city_roles = classify_city_specializations(
+        game_state, player, config, fuel_positions=fuel_positions
+    )
     abandoned = tuple(
         city_id for city_id, role in city_roles.items()
         if role.role == SACRIFICIAL_DECAY or role.abandon
@@ -208,54 +245,70 @@ def assign_roles(
     )
 
     firefighter_units = _select_firefighter_units(player.units, player.cities, critical)
-    live_unit_ids = {unit.id for unit in player.units}
-    for unit_id in list(state.role_by_unit_id):
-        if unit_id not in live_unit_ids:
-            state.role_by_unit_id.pop(unit_id, None)
-            state.last_change_turn_by_unit_id.pop(unit_id, None)
-
-    unit_roles: Dict[str, UnitRoleAssignment] = {}
+    enemy_worker_near_positions = _enemy_worker_near_positions(
+        opponent.units, config.attacker_enemy_worker_distance
+    )
     turn = int(game_state.turn)
-    for unit in player.units:
-        desired_role, reason = _desired_unit_role(
+    units = list(player.units)
+    unit_ids = np.asarray([unit.id for unit in units], dtype=object)
+    previous_index = {unit_id: index for index, unit_id in enumerate(state.unit_ids.tolist())}
+    previous_codes = np.full(len(units), -1, dtype=np.int8)
+    previous_expiry = np.full(len(units), -1, dtype=np.int16)
+    for index, unit_id in enumerate(unit_ids):
+        old_index = previous_index.get(unit_id)
+        if old_index is not None:
+            previous_codes[index] = state.role_codes[old_index]
+            previous_expiry[index] = state.cooldown_expiry[old_index]
+
+    in_cooldown = previous_expiry > turn
+    firefighter_set = set(firefighter_units)
+    override_mask = np.asarray([
+        config.firefighter_override_cooldown and unit.id in firefighter_set
+        for unit in units
+    ], dtype=bool)
+    desired_codes = previous_codes.copy()
+    reasons = ["cooldown_reuse" for _ in units]
+    for index, unit in enumerate(units):
+        if previous_codes[index] >= 0 and in_cooldown[index] and not override_mask[index]:
+            continue
+        desired_role, reasons[index] = _desired_unit_role(
             game_state=game_state,
             unit=unit,
             player=player,
             opponent=opponent,
-            firefighter_unit_ids=firefighter_units,
+            firefighter_unit_ids=firefighter_set,
+            enemy_worker_near_positions=enemy_worker_near_positions,
             risk_blocked_positions=risk_blocked_positions,
             config=config,
         )
-        previous_role = state.role_by_unit_id.get(unit.id)
-        last_change_turn = state.last_change_turn_by_unit_id.get(unit.id, -10**9)
-        cooldown_remaining = max(config.cooldown_turns - (turn - last_change_turn), 0)
-        override = (
-            desired_role == FIREFIGHTER and
-            config.firefighter_override_cooldown and
-            unit.id in firefighter_units
-        )
-        if previous_role is None:
-            role = desired_role
-            changed = True
-            state.role_by_unit_id[unit.id] = role
-            state.last_change_turn_by_unit_id[unit.id] = turn
-            cooldown_remaining = config.cooldown_turns
-        elif desired_role != previous_role and (cooldown_remaining == 0 or override):
-            role = desired_role
-            changed = True
-            state.role_by_unit_id[unit.id] = role
-            state.last_change_turn_by_unit_id[unit.id] = turn
-            cooldown_remaining = config.cooldown_turns
-        else:
-            role = previous_role
-            changed = False
+        desired_codes[index] = UNIT_ROLE_TO_CODE[desired_role]
+
+    new_unit_mask = previous_codes < 0
+    role_changed_mask = desired_codes != previous_codes
+    change_mask = new_unit_mask | (role_changed_mask & (~in_cooldown | override_mask))
+    role_codes = np.where(change_mask, desired_codes, previous_codes).astype(np.int8, copy=False)
+    cooldown_expiry = np.where(
+        change_mask,
+        turn + int(config.cooldown_turns),
+        previous_expiry,
+    ).astype(np.int16, copy=False)
+    cooldown_remaining = np.maximum(cooldown_expiry.astype(np.int32) - turn, 0)
+
+    state.unit_ids = unit_ids
+    state.role_codes = role_codes
+    state.cooldown_expiry = cooldown_expiry
+
+    unit_roles: Dict[str, UnitRoleAssignment] = {}
+    for index, unit in enumerate(units):
+        role = UNIT_ROLE_NAMES[int(role_codes[index])]
+        desired_role = UNIT_ROLE_NAMES[int(desired_codes[index])]
         unit_roles[unit.id] = UnitRoleAssignment(
             unit_id=unit.id,
             role=role,
             desired_role=desired_role,
-            changed=changed,
-            cooldown_remaining=cooldown_remaining,
-            reason=reason,
+            changed=bool(change_mask[index]),
+            cooldown_remaining=int(cooldown_remaining[index]),
+            reason=reasons[index],
         )
 
     return RoleAssignmentSnapshot(
@@ -323,18 +376,48 @@ def city_tile_roles(player, snapshot: RoleAssignmentSnapshot) -> Dict[Tuple[int,
     return roles
 
 
-def classify_city_specializations(game_state, player, config: RoleAssignmentConfig) -> Dict[str, CitySpecialization]:
-    fuel_positions = _fuel_resource_positions(game_state, player)
+def classify_city_specializations(
+        game_state,
+        player,
+        config: RoleAssignmentConfig,
+        fuel_positions: Optional[Sequence[Position]] = None,
+) -> Dict[str, CitySpecialization]:
+    if fuel_positions is None:
+        fuel_positions = _fuel_resource_positions(game_state, player)
     city_centers = {
         city_id: _city_center(city.citytiles)
         for city_id, city in player.cities.items()
         if city.citytiles
     }
+    city_ids_with_centers = list(city_centers)
+    center_array = np.asarray(
+        [city_centers[city_id].astuple() for city_id in city_ids_with_centers],
+        dtype=np.int16,
+    )
+    fuel_array = np.asarray([position.astuple() for position in fuel_positions], dtype=np.int16)
+    fuel_distance_by_city = {}
+    city_distance_by_city = {}
+    if len(center_array):
+        if len(fuel_array):
+            fuel_distances = np.abs(center_array[:, None, :] - fuel_array[None, :, :]).sum(axis=2)
+            nearest_fuel = fuel_distances.min(axis=1)
+            fuel_distance_by_city = {
+                city_id: int(nearest_fuel[index])
+                for index, city_id in enumerate(city_ids_with_centers)
+            }
+        city_distances = np.abs(center_array[:, None, :] - center_array[None, :, :]).sum(axis=2)
+        mean_city_distances = (
+            city_distances.sum(axis=1) / max(len(city_ids_with_centers) - 1, 1)
+        )
+        city_distance_by_city = {
+            city_id: float(mean_city_distances[index])
+            for index, city_id in enumerate(city_ids_with_centers)
+        }
     raw: Dict[str, CitySpecialization] = {}
     for city_id, city in player.cities.items():
         center = city_centers.get(city_id)
-        fuel_distance = _nearest_distance(center, fuel_positions) if center is not None else None
-        city_distance = _mean_distance_to_other_cities(city_id, center, city_centers)
+        fuel_distance = fuel_distance_by_city.get(city_id)
+        city_distance = city_distance_by_city.get(city_id)
         nights = _city_nights_of_fuel(city)
         abandon = _should_abandon_city(
             city=city,
@@ -423,6 +506,7 @@ def _desired_unit_role(
         player,
         opponent,
         firefighter_unit_ids: Sequence[str],
+        enemy_worker_near_positions: Iterable[Tuple[int, int]],
         risk_blocked_positions: Iterable[Tuple[int, int]],
         config: RoleAssignmentConfig,
 ) -> Tuple[str, str]:
@@ -439,7 +523,7 @@ def _desired_unit_role(
             unit.can_build(game_state.map)
     ):
         return BUILDER, "full_worker_on_legal_non_risk_build_tile"
-    if unit.is_worker() and _near_enemy_worker(unit, opponent.units, config.attacker_enemy_worker_distance):
+    if unit.is_worker() and unit.pos.astuple() in enemy_worker_near_positions:
         if player.city_tile_count >= opponent.city_tile_count or len(player.units) >= len(opponent.units):
             return ATTACKER, "enemy_worker_nearby_with_even_or_better_position"
     return HARVESTER, "default_resource_flow"
@@ -454,8 +538,14 @@ def _select_firefighter_units(units, cities, critical_city_ids: Sequence[str]) -
     if not critical_targets:
         return ()
     candidates = [unit for unit in units if _cargo_total(unit) > 0]
-    candidates.sort(key=lambda unit: (min(unit.pos.distance_to(target) for target in critical_targets), unit.id))
-    return tuple(unit.id for unit in candidates[:2])
+    if not candidates:
+        return ()
+    unit_positions = np.asarray([unit.pos.astuple() for unit in candidates], dtype=np.int16)
+    target_positions = np.asarray([target.astuple() for target in critical_targets], dtype=np.int16)
+    distances = np.abs(unit_positions[:, None, :] - target_positions[None, :, :]).sum(axis=2)
+    nearest = distances.min(axis=1)
+    order = sorted(range(len(candidates)), key=lambda index: (int(nearest[index]), candidates[index].id))
+    return tuple(candidates[index].id for index in order[:2])
 
 
 def _select_manufacturing_city_id(player, specs: Mapping[str, CitySpecialization], active_city_ids: Sequence[str]):
@@ -520,11 +610,7 @@ def _should_abandon_city(*, city, center, player, fuel_distance, nights: float, 
     cargo_carriers = [unit for unit in player.units if _cargo_total(unit) > 0]
     if not cargo_carriers:
         return True
-    nearest_carriers = sorted(
-        cargo_carriers,
-        key=lambda unit: unit.pos.distance_to(center) if center is not None else 10**6,
-    )
-    needed = min(len(nearest_carriers), max(len(city.citytiles), 1))
+    needed = min(len(cargo_carriers), max(len(city.citytiles), 1))
     transport_share = needed / max(len(player.units), 1)
     fuel_poor = fuel_distance is None or fuel_distance > max(4, len(city.citytiles) + 3)
     return transport_share > config.abandon_transport_share_threshold and fuel_poor
@@ -581,8 +667,14 @@ def _cargo_total(unit) -> int:
     return int(unit.cargo.wood + unit.cargo.coal + unit.cargo.uranium)
 
 
-def _near_enemy_worker(unit, opponent_units, max_distance: int) -> bool:
-    return any(
-        other.is_worker() and unit.pos.distance_to(other.pos) <= max_distance
-        for other in opponent_units
-    )
+def _enemy_worker_near_positions(opponent_units, max_distance: int):
+    positions = set()
+    for unit in opponent_units:
+        if not unit.is_worker():
+            continue
+        x, y = unit.pos.astuple()
+        for dx in range(-max_distance, max_distance + 1):
+            remaining = max_distance - abs(dx)
+            for dy in range(-remaining, remaining + 1):
+                positions.add((x + dx, y + dy))
+    return positions
