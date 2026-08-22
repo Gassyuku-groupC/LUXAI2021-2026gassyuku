@@ -443,6 +443,8 @@ class RLAgent:
             "map_size": int(self.game_state.map_width),
             "bias_active": bool(bias_active),
             "bias_scale": float(self.role_assignment_config.bias_scale_for(self.game_state.map_width)),
+            "update_seconds": float(self.role_city_adapter.last_update_seconds),
+            "update_degraded": bool(self.role_city_adapter.last_update_degraded),
             "units": unit_records,
             "cities": city_records,
         }

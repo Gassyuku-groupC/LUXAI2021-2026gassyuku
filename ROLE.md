@@ -53,6 +53,7 @@ role_assignment:
   annotate_summary: false
   cooldown_turns: 5
   firefighter_override_cooldown: true
+  update_time_budget_seconds: 1.5
 ```
 
 Fixed deployment coefficients live in `role_city_bias_params.yaml`. A separate
@@ -92,17 +93,26 @@ runtime adapter YAML with `scripts/export_role_bias_checkpoint.py`.
 
 ## Bounded Multi-Map Runtime
 
-Role assignment runs on all four map sizes. The deployment package uses full
-learned role and city biases on 16x16. On 12x12, 24x24, and 32x32 it uses a
-safety-only mode: Firefighter movement, adjacent-unit relay transfer, and the
-Firefighter BUILD_CITY penalty remain active, while expansion, attacker, and
-city-specialization biases are observe-only. Per-map bias scales and worker
-budgets bound both strategy drift and runtime cost.
+Role assignment and learned role/city biases run on all four map sizes. Per-map
+bias scales and worker budgets bound strategy drift and runtime cost; Attacker
+is processed only after Firefighter, Builder, and Harvester. A safety-only mode
+remains configurable for experiments but is empty in generated deployment
+packages.
 
-This replaces the earlier whole-map disable switch. The previously timing-out
-24x24 seeds `314159265/p0` and `86753091/p1` completed under the 300-second
-evaluation cap in safety-only mode. A 32x32 smoke with seed `20260826` also
-completed under the same cap.
+This replaces the earlier whole-map disable and safety-only switches. Full-role
+smokes completed under the 300-second cap on 12x12, 16x16, 24x24, and 32x32.
+Some map/seed/side combinations can still stall inside the Lux engine without
+producing command output; those failures are tracked separately from adapter
+latency.
+
+Attacker has the lowest runtime bias priority. Cooldowns use compact NumPy
+arrays, nearest-target distances and directions use broadcast matrices, and
+adjacent transfer lookup uses a board-sized unit grid. Fixed biases are applied
+to cloned logits with a single batched in-place update before the legal mask is
+reapplied. Completed research skips research-oriented city biases. When an
+update exceeds `update_time_budget_seconds`, the next turn reuses the previous
+assignment; role traces record `update_seconds` and `update_degraded` for
+latency audits.
 
 ## Replay Overlay
 

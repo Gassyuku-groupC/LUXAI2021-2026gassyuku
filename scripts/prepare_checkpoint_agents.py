@@ -136,7 +136,8 @@ def build_agent(
             "bias_disabled_players_by_map": {},
             "bias_scale_by_map_size": {12: 0.35, 16: 1.0, 24: 0.35, 32: 0.25},
             "max_biased_workers_by_map_size": {12: 32, 16: 64, 24: 64, 32: 64},
-            "safety_only_map_sizes": [12, 24, 32],
+            "safety_only_map_sizes": [],
+            "update_time_budget_seconds": 1.5,
         })
         agent_config_path.write_text(
             yaml.safe_dump(agent_config, sort_keys=False), encoding="utf-8"
