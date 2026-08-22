@@ -79,9 +79,16 @@ training should proceed in controlled stages:
 
 Recommended initial learning-rate ranges are `1e-7` to `5e-7` for Actor,
 `5e-7` to `2e-6` for Sidecar, and `5e-6` to `2e-5` for Role Adapter. Exposing
-parameters is not sufficient by itself: the KL-APPO learner must explicitly add
-adapter parameters to its optimizer and checkpoint state before learned-role
-training is considered implemented.
+parameters is not sufficient by itself. The Role-only learner now transports a
+compact signed action-to-parameter code with each rollout, reconstructs the
+role Logit Delta in the learner, and saves the 14 parameters with optimizer and
+checkpoint state. Actor, Sidecar, and Gate tensors remain frozen in this stage.
+
+The Role-only repair configuration is `conf/conv_role_only_repair.yaml`. It uses
+the reproduced best Actor plus zero-delta Sidecar as its student start, fixes
+`best_agent` as the KL teacher, gives 12x12 a low policy weight as an anchor, and
+up-weights turns 25-39 on 16x16 and 24x24. Learned values can be exported to the
+runtime adapter YAML with `scripts/export_role_bias_checkpoint.py`.
 
 ## Initial A/B Evidence
 

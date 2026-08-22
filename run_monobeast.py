@@ -68,6 +68,7 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags.setdefault("reduction", "mean")
     flags.setdefault("clip_grads", 10.)
     flags.setdefault("checkpoint_freq", 10.)
+    flags.setdefault("checkpoint_dir", ".")
     flags.setdefault("num_learner_threads", 1)
     flags.setdefault("use_teacher", False)
     flags.setdefault("teacher_baseline_cost", flags.get("teacher_kl_cost", 0.) / 2.)
@@ -84,6 +85,11 @@ def get_default_flags(flags: DictConfig) -> DictConfig:
     flags.setdefault("reference_policy_kl_cost", flags.get("teacher_kl_cost", 0.0))
     # Backward-compatible alias. New configs should use reference_policy_kl_cost.
     flags["teacher_kl_cost"] = flags["reference_policy_kl_cost"]
+    flags.setdefault("role_bias_training_enabled", False)
+    flags.setdefault("role_only_training", False)
+    flags.setdefault("role_small_map_policy_weight", 0.25)
+    flags.setdefault("role_hard_window_start", 25)
+    flags.setdefault("role_hard_window_weight", 2.0)
     flags.setdefault("normalize_policy_advantages", False)
     flags.setdefault("policy_advantage_clip", None)
     flags.setdefault("normalize_actor_critic_losses", False)

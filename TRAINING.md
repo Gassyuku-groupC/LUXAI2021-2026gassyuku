@@ -122,6 +122,33 @@ must explicitly save and restore adapter parameters and optimizer state before
 learned-role training begins. See [ROLE.md](ROLE.md) for the interface and
 initial learning-rate ranges.
 
+### Role-only Repair
+
+The first repair stage freezes Actor, spatial Sidecar, and intervention Gate and
+optimizes exactly 14 role bias scalars. It uses a fixed best-agent KL teacher,
+keeps teacher BC at `0.05`, samples maps with weights `12:16:24 = 1:2:3`, and
+up-weights the pre-night/night window on 16x16 and 24x24.
+
+```powershell
+Set-Location D:\Luxai\Kaggle_Lux_AI_2021
+
+.\.venv\Scripts\python.exe .\run_monobeast.py `
+  --config-name conv_role_only_repair 2>&1 |
+  Tee-Object .\outputs\role_only_repair\train.log
+```
+
+Export a selected checkpoint into the fixed runtime adapter format:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\export_role_bias_checkpoint.py `
+  --checkpoint .\outputs\role_only_repair\CHECKPOINT_weights.pt `
+  --output .\outputs\role_only_repair\role_city_bias_params.yaml
+```
+
+Do not promote from loss alone. Package the exported YAML and repeat paired
+12/16/24 evaluation. Require unchanged Actor/Sidecar/Gate tensors, finite role
+parameters, controlled Teacher KL, and lower paired 24x24 night-loss delta.
+
 ### 70560 Rescue Stage
 
 The first checkpoint screen promoted 70560 but exposed small-map and player-1

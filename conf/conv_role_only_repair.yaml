@@ -1,0 +1,72 @@
+defaults:
+  - conv_sidecar_appo_vtrace
+  - _self_
+
+name: conv_role_only_repair
+group: role_repair
+
+# Repeated sizes intentionally implement weighted random sampling.
+env_configuration:
+  width: 16
+  height: 16
+  loglevel: 0
+  trainingMapSizes: [12, 16, 16, 24, 24, 24]
+  trainingMapSampling: random
+
+role_bias_training_enabled: true
+role_only_training: true
+role_small_map_policy_weight: 0.25
+role_hard_window_start: 25
+role_hard_window_weight: 2.0
+role_assignment:
+  enabled: true
+  bias_enabled: true
+  learnable_biases: true
+  cooldown_turns: 5
+  firefighter_override_cooldown: true
+
+role_bias_initial:
+  harvester_move_bias: 0.35
+  harvester_mine_bias: 0.25
+  builder_build_city_bias: 1.00
+  builder_move_to_fuel_station_bias: 0.45
+  attacker_block_move_bias: 1.20
+  attacker_build_city_penalty: 2.00
+  firefighter_move_bias: 1.80
+  firefighter_transfer_bias: 1.20
+  firefighter_build_city_penalty: 2.50
+  depot_research_bias: 0.50
+  fuel_station_research_bias: 0.35
+  research_station_research_bias: 0.90
+  manufacturing_build_worker_bias: 1.10
+  sacrificial_noop_bias: 0.75
+
+# Start from the exact best Actor + zero-delta Sidecar checkpoint.
+load_dir: D:/Luxai/Kaggle_Lux_AI_2021/outputs/best_actor_sidecar
+checkpoint_file: best_actor_sidecar_zero_delta.pt
+student_pretrain_checkpoint: null
+weights_only: true
+spatial_risk_sidecar_checkpoint: null
+risk_gate_enabled: false
+use_aux_risk: false
+
+use_teacher: true
+teacher_load_dir: D:/Luxai/Kaggle_Lux_AI_2021/outputs/submission_packages/best_agent/lux_ai/rl_agent
+teacher_checkpoint_file: candidate_weights.pt
+reference_policy_kl_cost: 0.01
+teacher_baseline_cost: 0.0
+teacher_bc_cost_start: 0.05
+teacher_bc_cost_end: 0.05
+teacher_bc_anneal_games: 1
+rl_policy_cost: 1.0
+
+optimizer_kwargs:
+  lr: 1.0e-05
+  eps: 0.0003
+
+total_games: 100
+checkpoint_dir: D:/Luxai/Kaggle_Lux_AI_2021/outputs/role_only_repair
+
+hydra:
+  run:
+    dir: outputs/role_only_repair/${now:%Y-%m-%d_%H-%M-%S}
