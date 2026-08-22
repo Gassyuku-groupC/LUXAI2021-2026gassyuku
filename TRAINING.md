@@ -149,6 +149,26 @@ Do not promote from loss alone. Package the exported YAML and repeat paired
 12/16/24 evaluation. Require unchanged Actor/Sidecar/Gate tensors, finite role
 parameters, controlled Teacher KL, and lower paired 24x24 night-loss delta.
 
+### Role-only Stage 1 Continuation
+
+After checkpoint screening promotes `role_05376`, continue from its 14 learned
+bias values without restoring the old optimizer or game counter:
+
+```powershell
+Set-Location D:\Luxai\Kaggle_Lux_AI_2021
+
+.\.venv\Scripts\python.exe .\run_monobeast.py `
+  --config-name conv_role_only_stage1 2>&1 |
+  Tee-Object .\outputs\role_only_stage1\train.log
+```
+
+This stage samples all four map sizes, keeps 12x12 as a low-weight behavior
+anchor, and emphasizes 16x16/24x24 night windows. It freezes Actor, Sidecar,
+and Gate; only the 14 Role Adapter scalars are optimized against the fixed
+`best_agent` teacher. Start with `batch_size=16`. Override to `batch_size=32`
+only after the first finite learner update and sufficient GPU headroom are both
+confirmed. Stop after 100 games and promote only through paired replay results.
+
 ### 70560 Rescue Stage
 
 The first checkpoint screen promoted 70560 but exposed small-map and player-1
