@@ -160,6 +160,13 @@ def _create_model(
         from ..rl_agent.learned_intervention_gate import SidecarLogitDeltaGate
         from ..rl_agent.sidecar_agent_wrapper import SidecarAgentWrapper
         from ..rl_agent.spatial_risk_sidecar import SpatialRiskAttentionSidecar
+        role_bias_layer = None
+        if getattr(flags, "role_bias_training_enabled", False):
+            from ..rl_agent.role_assignment import RoleCityBiasParams
+            from ..rl_agent.trainable_role_bias import TrainableRoleBiasLayer
+            role_bias_layer = TrainableRoleBiasLayer(
+                RoleCityBiasParams.from_mapping(getattr(flags, "role_bias_initial", None))
+            ).to(device)
         model = SidecarAgentWrapper(
             model,
             SpatialRiskAttentionSidecar(
@@ -176,5 +183,6 @@ def _create_model(
             safe_expansion_threshold=getattr(flags, "safe_expansion_threshold", 0.80),
             logit_bias_lambda=getattr(flags, "logit_bias_lambda", 4.0),
             freeze_base_agent=getattr(flags, "sidecar_freeze_base_agent", True),
+            role_bias_layer=role_bias_layer,
         ).to(device)
     return model

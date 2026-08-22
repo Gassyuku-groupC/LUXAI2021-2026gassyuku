@@ -9,6 +9,7 @@ from lux_ai.lux.game_objects import City, Player, Unit
 from lux_ai.lux_gym.act_spaces import ACTION_MEANINGS, ACTION_MEANINGS_TO_IDX
 from lux_ai.rl_agent.role_assignment import RoleAssignmentConfig, RoleCityBiasParams
 from lux_ai.rl_agent.role_city_adapter import RoleCityAdapter, pos_to_loc
+from lux_ai.rl_agent.trainable_role_bias import ROLE_BIAS_INDEX, TrainableRoleBiasLayer
 
 
 class RoleCityAdapterTests(unittest.TestCase):
@@ -169,6 +170,25 @@ class RoleCityAdapterTests(unittest.TestCase):
         self.assertLess(relay.pos.distance_to(city.citytiles[0].pos), carrier.pos.distance_to(city.citytiles[0].pos))
         self.assertGreater(output["worker"][0, 0, 0, 3, 0, transfer_w].item(), 0.0)
         self.assertEqual(output["worker"][0, 0, 0, 3, 0, transfer_e].item(), 0.0)
+
+    def test_trainable_role_layer_updates_only_encoded_logits(self):
+        layer = TrainableRoleBiasLayer()
+        logits, _ = self.make_policy()
+        codes = {key: torch.zeros_like(value, dtype=torch.int8) for key, value in logits.items()}
+        build = ACTION_MEANINGS_TO_IDX["worker"]["BUILD_CITY"]
+        code = ROLE_BIAS_INDEX["builder_build_city_bias"] + 1
+        codes["worker"][0, 0, 0, 1, 1, build] = code
+        codes["worker"][0, 0, 0, 2, 2, build] = -code
+
+        output = layer(logits, codes)
+        self.assertEqual(len(layer.bias_params), 14)
+        self.assertAlmostEqual(output["worker"][0, 0, 0, 1, 1, build].item(), 1.0)
+        self.assertAlmostEqual(output["worker"][0, 0, 0, 2, 2, build].item(), -1.0)
+        self.assertEqual(torch.count_nonzero(output["city_tile"]).item(), 0)
+
+        loss = output["worker"][0, 0, 0, 1, 1, build]
+        loss.backward()
+        self.assertAlmostEqual(layer.bias_params["builder_build_city_bias"].grad.item(), 1.0)
 
 
 if __name__ == "__main__":

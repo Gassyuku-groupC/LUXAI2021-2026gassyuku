@@ -38,6 +38,7 @@ class SidecarAgentWrapper(nn.Module):
             safe_expansion_threshold: float = 0.80,
             logit_bias_lambda: float = 4.0,
             freeze_base_agent: bool = True,
+            role_bias_layer: nn.Module | None = None,
     ):
         super().__init__()
         if getattr(base_agent, "learned_intervention_gate", None) is not None:
@@ -50,6 +51,7 @@ class SidecarAgentWrapper(nn.Module):
         self.safe_expansion_threshold = float(safe_expansion_threshold)
         self.logit_bias_lambda = float(logit_bias_lambda)
         self.freeze_base = bool(freeze_base_agent)
+        self.role_bias_layer = role_bias_layer
         self.base_out_channels = base_agent.base_out_channels
         if self.freeze_base:
             self.freeze_base_agent()
@@ -113,6 +115,9 @@ class SidecarAgentWrapper(nn.Module):
             logit_bias_lambda=self.logit_bias_lambda,
             active_mask=active_mask,
         )
+        role_codes = model_input.get("info", {}).get("role_bias_codes")
+        if self.role_bias_layer is not None and role_codes is not None:
+            final_policy_logits = self.role_bias_layer(final_policy_logits, role_codes)
         actions_per_square = actor_kwargs.get("actions_per_square", MAX_OVERLAPPING_ACTIONS)
         actions = {}
         for action_space, logits in final_policy_logits.items():

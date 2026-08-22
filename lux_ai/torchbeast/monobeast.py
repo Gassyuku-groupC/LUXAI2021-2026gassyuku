@@ -41,6 +41,8 @@ from ..nns import create_model
 from ..rl_agent.auxiliary_heads import AuxiliaryRiskHead
 from ..rl_agent.data_augmentation import HorizontalFlip, Rot90, Rot180, Rot270, VerticalFlip
 from ..rl_agent.gate_policy import apply_runtime_gate_to_actor_output
+from ..rl_agent.role_assignment import RoleAssignmentConfig
+from ..rl_agent.trainable_role_bias import RoleBiasCodeBuilder, attach_role_bias_codes
 from ..utils import flags_to_namespace
 
 
@@ -60,7 +62,19 @@ def load_training_model_state(model: nn.Module, state_dict: Dict, flags: SimpleN
     """Load a legacy actor checkpoint while allowing a newly added gate head."""
     if getattr(flags, "spatial_risk_sidecar_enabled", False):
         if any(key.startswith("base_agent.") for key in state_dict):
-            model.load_state_dict(state_dict, strict=True)
+            incompatible = model.load_state_dict(state_dict, strict=False)
+            allowed_missing = (
+                "role_bias_layer." if getattr(flags, "role_bias_training_enabled", False) else ()
+            )
+            invalid_missing = [
+                key for key in incompatible.missing_keys
+                if not allowed_missing or not key.startswith(allowed_missing)
+            ]
+            if invalid_missing or incompatible.unexpected_keys:
+                raise RuntimeError(
+                    f"Incompatible sidecar checkpoint: missing={invalid_missing}, "
+                    f"unexpected={list(incompatible.unexpected_keys)}"
+                )
             return
         incompatible = model.base_agent.load_state_dict(state_dict, strict=True)
         if incompatible.missing_keys or incompatible.unexpected_keys:
@@ -104,6 +118,34 @@ def configure_gate_only_training(model: nn.Module, training: bool) -> None:
         parameter.requires_grad_(True)
     model.eval()
     gate.train(training)
+
+
+def configure_role_only_training(model: nn.Module, training: bool) -> None:
+    role_layer = getattr(model, "role_bias_layer", None)
+    if role_layer is None:
+        raise ValueError("role_only_training requires role_bias_training_enabled=true.")
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    for parameter in role_layer.parameters():
+        parameter.requires_grad_(True)
+    model.eval()
+    role_layer.train(training)
+
+
+def create_role_code_builder(flags) -> Optional[RoleBiasCodeBuilder]:
+    if not getattr(flags, "role_bias_training_enabled", False):
+        return None
+    raw_config = getattr(flags, "role_assignment", {})
+    if isinstance(raw_config, SimpleNamespace):
+        raw_config = vars(raw_config)
+    config = RoleAssignmentConfig.from_mapping(raw_config)
+    if not config.enabled:
+        raise ValueError("role_bias_training_enabled requires role_assignment.enabled=true.")
+    return RoleBiasCodeBuilder(config)
+
+
+def add_role_codes_if_enabled(env_output, env, builder):
+    return attach_role_bias_codes(env_output, env, builder) if builder is not None else env_output
 
 
 def load_spatial_sidecar_pretrain(model: nn.Module, path: Optional[str]) -> None:
@@ -159,6 +201,12 @@ def augment_training_batch(batch: Dict, flags: SimpleNamespace) -> Dict:
             ):
                 transformed = augmenter.op(container[key], inverse=False, is_policy=True)
                 container[key].copy_(augmenter._transform_policy({space: transformed}, inverse=False)[space])
+            if "role_bias_codes" in batch["info"]:
+                role_codes = batch["info"]["role_bias_codes"][space]
+                transformed = augmenter.op(role_codes, inverse=False, is_policy=True)
+                role_codes.copy_(
+                    augmenter._transform_policy({space: transformed}, inverse=False)[space]
+                )
 
             actions = augmenter.op(batch["actions"][space], inverse=False, is_policy=True)
             policy_permutation = augmenter.transformed_action_idxs_forward[space]
@@ -202,6 +250,9 @@ def augment_training_batch(batch: Dict, flags: SimpleNamespace) -> Dict:
                 value.copy_(maybe_swap_players(value, -4))
         for group_name in ("available_actions_mask", "actions_taken"):
             for value in batch["info"][group_name].values():
+                value.copy_(maybe_swap_players(value, -4))
+        if "role_bias_codes" in batch["info"]:
+            for value in batch["info"]["role_bias_codes"].values():
                 value.copy_(maybe_swap_players(value, -4))
         input_mask = batch["info"]["input_mask"]
         input_mask.copy_(maybe_swap_players(input_mask, -3))
@@ -445,6 +496,21 @@ def stabilize_policy_advantages(
     return advantages
 
 
+def role_repair_advantage_weights(batch, advantages: torch.Tensor, flags) -> torch.Tensor:
+    if not getattr(flags, "role_only_training", False):
+        return torch.ones_like(advantages)
+    board_size = batch["obs"]["board_size"].reshape(*advantages.shape[:2], -1)[..., 0]
+    cycle = batch["obs"]["day_night_cycle"].reshape(*advantages.shape[:2], -1)[..., 0]
+    weights = torch.ones_like(advantages)
+    small_map_weight = float(getattr(flags, "role_small_map_policy_weight", 0.25))
+    weights = torch.where((board_size == 0).unsqueeze(-1), weights * small_map_weight, weights)
+    hard_map = (board_size == 1) | (board_size == 2)
+    hard_window = hard_map & (cycle >= int(getattr(flags, "role_hard_window_start", 25)))
+    hard_weight = float(getattr(flags, "role_hard_window_weight", 2.0))
+    weights = torch.where(hard_window.unsqueeze(-1), weights * hard_weight, weights)
+    return weights
+
+
 @torch.no_grad()
 def act(
         flags: SimpleNamespace,
@@ -464,11 +530,12 @@ def act(
         timings = prof.Timings()
 
         env = create_env(flags, device=flags.actor_device, teacher_flags=teacher_flags)
+        role_code_builder = create_role_code_builder(flags)
         if flags.seed is not None:
             env.seed(flags.seed + actor_index * flags.n_actor_envs)
         else:
             env.seed()
-        env_output = env.reset(force=True)
+        env_output = add_role_codes_if_enabled(env.reset(force=True), env, role_code_builder)
         agent_output = actor_model(env_output)
         agent_output = apply_runtime_gate_to_actor_output(agent_output, env, flags)
         while True:
@@ -502,6 +569,7 @@ def act(
                     env_output["done"] = cached_done
                     env_output["info"]["actions_taken"] = cached_info_actions_taken
                     env_output["info"].update(cached_info_logging)
+                env_output = add_role_codes_if_enabled(env_output, env, role_code_builder)
                 timings.time("step")
 
                 fill_buffers_inplace(buffers[index], dict(**env_output, **agent_output), t + 1)
@@ -768,6 +836,9 @@ def learn(
                     flags.normalize_policy_advantages,
                     flags.policy_advantage_clip,
                 )
+                appo_advantages = appo_advantages * role_repair_advantage_weights(
+                    batch, appo_advantages, flags
+                )
                 vtrace_pg_loss, appo_clip_fraction, appo_approx_kl = compute_appo_policy_loss(
                     normalized_learner_action_log_probs,
                     normalized_behavior_action_log_probs,
@@ -934,6 +1005,11 @@ def learn(
                     "overall": (teacher_bc_total_correct / teacher_bc_total_count.clamp(min=1)).item(),
                     **teacher_bc_accuracies,
                 },
+                "Role_Biases": (
+                    learner_model.role_bias_layer.values()
+                    if getattr(learner_model, "role_bias_layer", None) is not None
+                    else {}
+                ),
                 "Misc": {
                     "learning_rate": last_lr,
                     "teacher_bc_cost": teacher_bc_cost,
@@ -1020,10 +1096,13 @@ def train(flags):
         teacher_flags = None
 
     example_env = create_env(flags, torch.device("cpu"), teacher_flags=teacher_flags)
+    example_env_output = add_role_codes_if_enabled(
+        example_env.reset(force=True), example_env, create_role_code_builder(flags)
+    )
     buffers = create_buffers(
         flags,
         example_env.unwrapped[0].obs_space,
-        example_env.reset(force=True)["info"]
+        example_env_output["info"]
     )
     del example_env
 
@@ -1039,6 +1118,8 @@ def train(flags):
     load_student_pretrain(actor_model, getattr(flags, "student_pretrain_checkpoint", None))
     if getattr(flags, "gate_only_training", False):
         configure_gate_only_training(actor_model, training=False)
+    elif getattr(flags, "role_only_training", False):
+        configure_role_only_training(actor_model, training=False)
     actor_model.eval()
     actor_model.share_memory()
     n_trainable_params = sum(p.numel() for p in actor_model.parameters() if p.requires_grad)
@@ -1073,6 +1154,8 @@ def train(flags):
     load_student_pretrain(learner_model, getattr(flags, "student_pretrain_checkpoint", None))
     if getattr(flags, "gate_only_training", False):
         configure_gate_only_training(learner_model, training=True)
+    elif getattr(flags, "role_only_training", False):
+        configure_role_only_training(learner_model, training=True)
     else:
         learner_model.train()
     learner_model = learner_model.share_memory()
@@ -1233,6 +1316,9 @@ def train(flags):
         learner_threads.append(thread)
 
     def checkpoint(checkpoint_path: Union[str, Path]):
+        checkpoint_path = Path(getattr(flags, "checkpoint_dir", ".")) / checkpoint_path
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = str(checkpoint_path)
         if flags.log_detailed_stats:
             logging.info(f"Saving checkpoint to {checkpoint_path}")
         torch.save(
@@ -1315,6 +1401,7 @@ def train(flags):
                 loss_stats = stats.get("Loss", {})
                 bc_stats = stats.get("Teacher_BC_Accuracy", {})
                 misc_stats = stats.get("Misc", {})
+                role_stats = stats.get("Role_Biases", {})
                 total_loss = float(loss_stats.get("total_loss", float("nan")))
 
                 def format_env_stat(name: str, decimals: int) -> str:
@@ -1324,7 +1411,7 @@ def train(flags):
                 logging.info(
                     "Games %d/%s | steps %d | %.1f SPS | loss %s | reward %s | "
                     "bc %.3f W%.0f/C%.0f/K%.0f @ %.3f | aux %.3f P%.2f/R%.2f/+%.2f | "
-                    "city tiles %s | research %s",
+                    "city tiles %s | research %s | role B%.3f/F%.3f/T%.3f",
                     total_games_played,
                     flags.total_games if flags.total_games is not None else "--",
                     step,
@@ -1342,6 +1429,9 @@ def train(flags):
                     float(misc_stats.get("aux_loss20_positive_rate", 0.0)),
                     format_env_stat("city_tiles_final", 1),
                     format_env_stat("research_points", 1),
+                    float(role_stats.get("builder_build_city_bias", 0.0)),
+                    float(role_stats.get("firefighter_move_bias", 0.0)),
+                    float(role_stats.get("firefighter_transfer_bias", 0.0)),
                 )
     except KeyboardInterrupt:
         # Try checkpointing and joining actors then quit.
