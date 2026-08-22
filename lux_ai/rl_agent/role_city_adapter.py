@@ -48,6 +48,11 @@ class RoleCityAdapter(nn.Module):
         self.config = config
         self.state = RoleState()
         self.snapshot: Optional[RoleAssignmentSnapshot] = None
+        self._fuel_positions = []
+        self._unit_by_position = {}
+        self._enemy_worker_positions = []
+        self._city_centers_by_role = {}
+        self._critical_city_centers = []
         self.learnable_biases = learnable_biases
         if learnable_biases:
             self.bias_params = nn.ParameterDict({
@@ -81,6 +86,7 @@ class RoleCityAdapter(nn.Module):
         if not self.config.enabled:
             self.snapshot = None
             return None
+        self._fuel_positions = self._collect_fuel_positions(game_state, player)
         self.snapshot = assign_roles(
             game_state=game_state,
             player=player,
@@ -88,8 +94,20 @@ class RoleCityAdapter(nn.Module):
             state=self.state,
             config=self.config,
             risk_blocked_positions=risk_blocked_positions,
+            fuel_positions=self._fuel_positions,
         )
+        self._unit_by_position = {
+            unit.pos.astuple(): unit for unit in player.units
+        }
+        self._enemy_worker_positions = [
+            unit.pos for unit in opponent.units if unit.is_worker()
+        ]
+        self._city_centers_by_role = self._collect_city_centers_by_role(player)
+        self._critical_city_centers = self.snapshot.critical_city_centers(player)
         return self.snapshot
+
+    def deactivate(self) -> None:
+        self.snapshot = None
 
     def apply(
             self,
@@ -107,8 +125,21 @@ class RoleCityAdapter(nn.Module):
             return policy_logits
 
         out = dict(policy_logits)
-        worker_logits = policy_logits["worker"].clone()
-        city_logits = policy_logits["city_tile"].clone()
+        runtime_fast_path = self.bias_params is None
+        if runtime_fast_path:
+            worker_logits = torch.zeros(
+                policy_logits["worker"].shape,
+                dtype=policy_logits["worker"].dtype,
+                device="cpu",
+            )
+            city_logits = torch.zeros(
+                policy_logits["city_tile"].shape,
+                dtype=policy_logits["city_tile"].dtype,
+                device="cpu",
+            )
+        else:
+            worker_logits = policy_logits["worker"].clone()
+            city_logits = policy_logits["city_tile"].clone()
         worker_mask = available_actions_mask["worker"]
         city_mask = available_actions_mask["city_tile"]
 
@@ -125,7 +156,7 @@ class RoleCityAdapter(nn.Module):
                 if cell.has_resource():
                     self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, "NO-OP",
                                              "harvester_mine_bias")
-                target = nearest_fuel_position(game_state, player, worker.pos)
+                target = self._nearest_position(self._fuel_positions, worker.pos)
                 direction = direction_towards(worker.pos, target)
                 if direction is not None:
                     self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, f"MOVE_{direction}",
@@ -135,13 +166,15 @@ class RoleCityAdapter(nn.Module):
                     self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, "BUILD_CITY",
                                              "builder_build_city_bias")
                 else:
-                    target = nearest_city_center_by_role(player, self.snapshot, FUEL_STATION, worker.pos)
+                    target = self._nearest_position(
+                        self._city_centers_by_role.get(FUEL_STATION, ()), worker.pos
+                    )
                     direction = direction_towards(worker.pos, target)
                     if direction is not None:
                         self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, f"MOVE_{direction}",
                                                  "builder_move_to_fuel_station_bias")
             elif assignment.role == ATTACKER:
-                target = nearest_enemy_worker_position(opponent, worker.pos)
+                target = self._nearest_position(self._enemy_worker_positions, worker.pos)
                 direction = direction_towards(worker.pos, target)
                 if direction is not None:
                     self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, f"MOVE_{direction}",
@@ -149,12 +182,12 @@ class RoleCityAdapter(nn.Module):
                 self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, "BUILD_CITY",
                                          "attacker_build_city_penalty", sign=-1.0)
             elif assignment.role == FIREFIGHTER:
-                target = nearest_critical_city_center(player, self.snapshot, worker.pos)
+                target = self._nearest_position(self._critical_city_centers, worker.pos)
                 direction = direction_towards(worker.pos, target)
                 if direction is not None:
                     self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, f"MOVE_{direction}",
                                              "firefighter_move_bias")
-                self._bias_firefighter_transfers(worker_logits, worker_mask, player_id, player.units, worker, target)
+                self._bias_firefighter_transfers(worker_logits, worker_mask, player_id, worker, target)
                 self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, "BUILD_CITY",
                                          "firefighter_build_city_penalty", sign=-1.0)
 
@@ -176,8 +209,22 @@ class RoleCityAdapter(nn.Module):
             elif city_role == SACRIFICIAL_DECAY:
                 self._bias_city_action(city_logits, city_mask, player_id, x, y, "NO-OP", "sacrificial_noop_bias")
 
-        out["worker"] = worker_logits
-        out["city_tile"] = city_logits
+        if runtime_fast_path:
+            worker_candidate = policy_logits["worker"] + worker_logits.to(
+                device=policy_logits["worker"].device
+            )
+            city_candidate = policy_logits["city_tile"] + city_logits.to(
+                device=policy_logits["city_tile"].device
+            )
+            out["worker"] = torch.where(
+                worker_mask, worker_candidate, policy_logits["worker"]
+            )
+            out["city_tile"] = torch.where(
+                city_mask, city_candidate, policy_logits["city_tile"]
+            )
+        else:
+            out["worker"] = worker_logits
+            out["city_tile"] = city_logits
         return out
 
     def _bias_worker_action(
@@ -192,7 +239,11 @@ class RoleCityAdapter(nn.Module):
             sign: float = 1.0,
     ) -> None:
         idx = ACTION_MEANINGS_TO_IDX["worker"][action]
-        if mask[0, 0, player_id, x, y, idx]:
+        if self.bias_params is None:
+            logits[0, 0, player_id, x, y, idx] += (
+                float(getattr(self.config.bias_params, param_name)) * sign
+            )
+        elif mask[0, 0, player_id, x, y, idx]:
             logits[0, 0, player_id, x, y, idx] = (
                 logits[0, 0, player_id, x, y, idx] +
                 self.bias_value(param_name, logits) * sign
@@ -209,7 +260,11 @@ class RoleCityAdapter(nn.Module):
             param_name: str,
     ) -> None:
         idx = ACTION_MEANINGS_TO_IDX["city_tile"][action]
-        if mask[0, 0, player_id, x, y, idx]:
+        if self.bias_params is None:
+            logits[0, 0, player_id, x, y, idx] += float(
+                getattr(self.config.bias_params, param_name)
+            )
+        elif mask[0, 0, player_id, x, y, idx]:
             logits[0, 0, player_id, x, y, idx] = (
                 logits[0, 0, player_id, x, y, idx] +
                 self.bias_value(param_name, logits)
@@ -220,7 +275,6 @@ class RoleCityAdapter(nn.Module):
             logits: torch.Tensor,
             mask: torch.Tensor,
             player_id: int,
-            units,
             worker: Unit,
             target,
     ) -> None:
@@ -237,7 +291,7 @@ class RoleCityAdapter(nn.Module):
             if worker.cargo.get(resource) <= 0:
                 continue
             for direction, (dx, dy) in directions.items():
-                recipient = next((u for u in units if u.pos.x == x + dx and u.pos.y == y + dy), None)
+                recipient = self._unit_by_position.get((x + dx, y + dy))
                 if recipient is None:
                     continue
                 # Lux 2021 transfer is unit-to-adjacent-unit only. This only biases relay transfers
@@ -246,8 +300,48 @@ class RoleCityAdapter(nn.Module):
                     continue
                 action = f"TRANSFER_{resource}_{direction}"
                 idx = ACTION_MEANINGS_TO_IDX["worker"][action]
-                if mask[0, 0, player_id, x, y, idx]:
+                if self.bias_params is None:
+                    logits[0, 0, player_id, x, y, idx] += float(
+                        self.config.bias_params.firefighter_transfer_bias
+                    )
+                elif mask[0, 0, player_id, x, y, idx]:
                     logits[0, 0, player_id, x, y, idx] = (
                         logits[0, 0, player_id, x, y, idx] +
                         self.bias_value("firefighter_transfer_bias", logits)
                     )
+
+    @staticmethod
+    def _nearest_position(positions, source):
+        if not positions:
+            return None
+        return min(
+            positions,
+            key=lambda target: (source.distance_to(target), target.x, target.y),
+        )
+
+    @staticmethod
+    def _collect_fuel_positions(game_state, player):
+        positions = []
+        for y in range(game_state.map_height):
+            for x in range(game_state.map_width):
+                cell = game_state.map.get_cell(x, y)
+                if not cell.has_resource():
+                    continue
+                if cell.resource.type == "wood":
+                    positions.append(cell.pos)
+                elif cell.resource.type == "coal" and player.researched_coal():
+                    positions.append(cell.pos)
+                elif cell.resource.type == "uranium" and player.researched_uranium():
+                    positions.append(cell.pos)
+        return positions
+
+    def _collect_city_centers_by_role(self, player):
+        centers = {}
+        for city_id, spec in self.snapshot.city_roles.items():
+            city = player.cities.get(city_id)
+            if city is None or not city.citytiles:
+                continue
+            x = round(sum(tile.pos.x for tile in city.citytiles) / len(city.citytiles))
+            y = round(sum(tile.pos.y for tile in city.citytiles) / len(city.citytiles))
+            centers.setdefault(spec.role, []).append(type(city.citytiles[0].pos)(x, y))
+        return centers

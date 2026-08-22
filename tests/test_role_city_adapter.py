@@ -74,6 +74,20 @@ class RoleCityAdapterTests(unittest.TestCase):
 
         self.assertIs(output, logits)
 
+    def test_bias_activation_respects_map_and_player_fallbacks(self):
+        config = RoleAssignmentConfig(
+            enabled=True,
+            bias_enabled=True,
+            bias_disabled_map_sizes=(12, 24, 32),
+            bias_disabled_players_by_map={},
+        )
+
+        self.assertFalse(config.bias_active_for(12, 0))
+        self.assertTrue(config.bias_active_for(16, 0))
+        self.assertFalse(config.bias_active_for(24, 0))
+        self.assertFalse(config.bias_active_for(24, 1))
+        self.assertFalse(config.bias_active_for(32, 1))
+
     def test_learnable_bias_receives_gradient(self):
         game = self.make_game(turn=10)
         player, opponent = Player(0), Player(1)

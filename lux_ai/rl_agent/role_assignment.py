@@ -86,6 +86,8 @@ class RoleAssignmentConfig:
     max_log_units: int = 8
     max_log_cities: int = 8
     annotate_summary: bool = False
+    bias_disabled_map_sizes: Sequence[int] = field(default_factory=tuple)
+    bias_disabled_players_by_map: Mapping[int, Sequence[int]] = field(default_factory=dict)
     bias_params: RoleCityBiasParams = field(default_factory=RoleCityBiasParams)
 
     @classmethod
@@ -122,6 +124,14 @@ class RoleAssignmentConfig:
         data = asdict(self)
         data["bias_params"] = self.bias_params.to_mapping()
         return data
+
+    def bias_active_for(self, map_size: int, player_id: int) -> bool:
+        if map_size in {int(size) for size in self.bias_disabled_map_sizes}:
+            return False
+        disabled_players = self.bias_disabled_players_by_map.get(map_size)
+        if disabled_players is None:
+            disabled_players = self.bias_disabled_players_by_map.get(str(map_size), ())
+        return player_id not in {int(value) for value in disabled_players}
 
 
 @dataclass(frozen=True)
@@ -195,9 +205,12 @@ def assign_roles(
         state: RoleState,
         config: RoleAssignmentConfig,
         risk_blocked_positions: Optional[Iterable[Tuple[int, int]]] = None,
+        fuel_positions: Optional[Sequence[Position]] = None,
 ) -> RoleAssignmentSnapshot:
     risk_blocked_positions = set(risk_blocked_positions or ())
-    city_roles = classify_city_specializations(game_state, player, config)
+    city_roles = classify_city_specializations(
+        game_state, player, config, fuel_positions=fuel_positions
+    )
     abandoned = tuple(
         city_id for city_id, role in city_roles.items()
         if role.role == SACRIFICIAL_DECAY or role.abandon
@@ -208,6 +221,9 @@ def assign_roles(
     )
 
     firefighter_units = _select_firefighter_units(player.units, player.cities, critical)
+    enemy_worker_near_positions = _enemy_worker_near_positions(
+        opponent.units, config.attacker_enemy_worker_distance
+    )
     live_unit_ids = {unit.id for unit in player.units}
     for unit_id in list(state.role_by_unit_id):
         if unit_id not in live_unit_ids:
@@ -223,6 +239,7 @@ def assign_roles(
             player=player,
             opponent=opponent,
             firefighter_unit_ids=firefighter_units,
+            enemy_worker_near_positions=enemy_worker_near_positions,
             risk_blocked_positions=risk_blocked_positions,
             config=config,
         )
@@ -323,8 +340,14 @@ def city_tile_roles(player, snapshot: RoleAssignmentSnapshot) -> Dict[Tuple[int,
     return roles
 
 
-def classify_city_specializations(game_state, player, config: RoleAssignmentConfig) -> Dict[str, CitySpecialization]:
-    fuel_positions = _fuel_resource_positions(game_state, player)
+def classify_city_specializations(
+        game_state,
+        player,
+        config: RoleAssignmentConfig,
+        fuel_positions: Optional[Sequence[Position]] = None,
+) -> Dict[str, CitySpecialization]:
+    if fuel_positions is None:
+        fuel_positions = _fuel_resource_positions(game_state, player)
     city_centers = {
         city_id: _city_center(city.citytiles)
         for city_id, city in player.cities.items()
@@ -423,6 +446,7 @@ def _desired_unit_role(
         player,
         opponent,
         firefighter_unit_ids: Sequence[str],
+        enemy_worker_near_positions: Iterable[Tuple[int, int]],
         risk_blocked_positions: Iterable[Tuple[int, int]],
         config: RoleAssignmentConfig,
 ) -> Tuple[str, str]:
@@ -439,7 +463,7 @@ def _desired_unit_role(
             unit.can_build(game_state.map)
     ):
         return BUILDER, "full_worker_on_legal_non_risk_build_tile"
-    if unit.is_worker() and _near_enemy_worker(unit, opponent.units, config.attacker_enemy_worker_distance):
+    if unit.is_worker() and unit.pos.astuple() in enemy_worker_near_positions:
         if player.city_tile_count >= opponent.city_tile_count or len(player.units) >= len(opponent.units):
             return ATTACKER, "enemy_worker_nearby_with_even_or_better_position"
     return HARVESTER, "default_resource_flow"
@@ -520,11 +544,7 @@ def _should_abandon_city(*, city, center, player, fuel_distance, nights: float, 
     cargo_carriers = [unit for unit in player.units if _cargo_total(unit) > 0]
     if not cargo_carriers:
         return True
-    nearest_carriers = sorted(
-        cargo_carriers,
-        key=lambda unit: unit.pos.distance_to(center) if center is not None else 10**6,
-    )
-    needed = min(len(nearest_carriers), max(len(city.citytiles), 1))
+    needed = min(len(cargo_carriers), max(len(city.citytiles), 1))
     transport_share = needed / max(len(player.units), 1)
     fuel_poor = fuel_distance is None or fuel_distance > max(4, len(city.citytiles) + 3)
     return transport_share > config.abandon_transport_share_threshold and fuel_poor
@@ -581,8 +601,14 @@ def _cargo_total(unit) -> int:
     return int(unit.cargo.wood + unit.cargo.coal + unit.cargo.uranium)
 
 
-def _near_enemy_worker(unit, opponent_units, max_distance: int) -> bool:
-    return any(
-        other.is_worker() and unit.pos.distance_to(other.pos) <= max_distance
-        for other in opponent_units
-    )
+def _enemy_worker_near_positions(opponent_units, max_distance: int):
+    positions = set()
+    for unit in opponent_units:
+        if not unit.is_worker():
+            continue
+        x, y = unit.pos.astuple()
+        for dx in range(-max_distance, max_distance + 1):
+            remaining = max_distance - abs(dx)
+            for dy in range(-remaining, remaining + 1):
+                positions.add((x + dx, y + dy))
+    return positions

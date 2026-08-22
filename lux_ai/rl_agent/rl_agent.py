@@ -314,11 +314,18 @@ class RLAgent:
 
         self.stopwatch.start("Observation processing")
         self.preprocess(obs, conf)
-        role_snapshot = self.role_city_adapter.update(
-            game_state=self.game_state,
-            player=self.me,
-            opponent=self.opp,
+        role_active = self.role_assignment_config.bias_active_for(
+            int(self.game_state.map_width), int(obs.player)
         )
+        if role_active:
+            role_snapshot = self.role_city_adapter.update(
+                game_state=self.game_state,
+                player=self.me,
+                opponent=self.opp,
+            )
+        else:
+            self.role_city_adapter.deactivate()
+            role_snapshot = None
         if role_snapshot is not None and self.role_assignment_config.dry_run_logging:
             DEBUG_MESSAGE(role_snapshot.summary(
                 max_units=self.role_assignment_config.max_log_units,

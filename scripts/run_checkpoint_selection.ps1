@@ -4,6 +4,7 @@ param(
     [string]$Phase = "phase1",
     [string[]]$Checkpoints = @("bc", "10816", "20128", "30272", "40288", "50112", "60288", "70560"),
     [int[]]$Seeds = @(20260824),
+    [int[]]$MapSizes = @(),
     [int]$AgentTurnTimeoutMs = 30000,
     [int]$TimeoutSeconds = 1200,
     [switch]$SkipPackaging
@@ -21,7 +22,9 @@ $Python = Join-Path $Root ".venv\Scripts\python.exe"
 $Agents = Join-Path $Root "outputs\checkpoint_selection\agents"
 $EvalOpponents = Join-Path $Root "outputs\checkpoint_selection\eval_opponents"
 $PhaseRoot = Join-Path $Root "outputs\checkpoint_selection\$Phase"
-$MapSizes = if ($Phase -eq "phase1") { @(12, 24) } else { @(12, 16, 24, 32) }
+if ($MapSizes.Count -eq 0) {
+    $MapSizes = if ($Phase -eq "phase1") { @(12, 24) } else { @(12, 16, 24, 32) }
+}
 $Opponents = if ($Phase -in @("phase1", "rescue", "distill", "repro")) { @("best_agent") } else { @("best_agent", "first", "stage350", "stage400") }
 
 if (-not $SkipPackaging) {

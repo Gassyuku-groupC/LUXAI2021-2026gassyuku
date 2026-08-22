@@ -24,6 +24,8 @@ DEFAULT_CHECKPOINTS = {
     "70560": "70560_weights.pt",
 }
 
+ROLE_BIAS_PREFIX = "role_bias_layer.bias_params."
+
 
 def parse_checkpoint(value: str) -> tuple[str, Path]:
     if "=" not in value:
@@ -48,6 +50,20 @@ def load_model_state(path: Path) -> dict:
     if nonfinite:
         raise FloatingPointError(f"Non-finite checkpoint tensors in {path}: {nonfinite[:10]}")
     return state
+
+
+def split_role_bias_state(state: dict) -> tuple[dict, dict[str, float]]:
+    model_state = {}
+    role_biases = {}
+    for name, value in state.items():
+        if not name.startswith(ROLE_BIAS_PREFIX):
+            model_state[name] = value
+            continue
+        bias_name = name.removeprefix(ROLE_BIAS_PREFIX)
+        if not torch.is_tensor(value) or value.numel() != 1:
+            raise ValueError(f"Role bias must be a scalar tensor: {name}")
+        role_biases[bias_name] = float(value.detach().cpu())
+    return model_state, role_biases
 
 
 def resolved_model_config(root: Path) -> dict:
@@ -85,7 +101,8 @@ def build_agent(
     )
     shutil.copy2(root / "main.py", output / "main.py")
     rl_dir = output / "lux_ai" / "rl_agent"
-    torch.save({"model_state_dict": load_model_state(checkpoint)}, rl_dir / "candidate_weights.pt")
+    model_state, learned_role_biases = split_role_bias_state(load_model_state(checkpoint))
+    torch.save({"model_state_dict": model_state}, rl_dir / "candidate_weights.pt")
     (rl_dir / "config.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
@@ -115,10 +132,19 @@ def build_agent(
             "annotate_summary": False,
             "cooldown_turns": 5,
             "firefighter_override_cooldown": True,
+            "bias_disabled_map_sizes": [12, 24, 32],
+            "bias_disabled_players_by_map": {},
         })
         agent_config_path.write_text(
             yaml.safe_dump(agent_config, sort_keys=False), encoding="utf-8"
         )
+        if learned_role_biases:
+            (rl_dir / "role_city_bias_params.yaml").write_text(
+                yaml.safe_dump(
+                    {"role_city_bias_params": learned_role_biases}, sort_keys=True
+                ),
+                encoding="utf-8",
+            )
 
 
 def main() -> None:
