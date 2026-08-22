@@ -1,0 +1,77 @@
+[CmdletBinding()]
+param(
+    [ValidateSet("phase1", "phase2", "rescue", "distill", "repro")]
+    [string]$Phase = "phase1",
+    [string[]]$Checkpoints = @("bc", "10816", "20128", "30272", "40288", "50112", "60288", "70560"),
+    [int[]]$Seeds = @(20260824),
+    [int]$AgentTurnTimeoutMs = 30000,
+    [int]$TimeoutSeconds = 1200,
+    [switch]$SkipPackaging
+)
+
+$ErrorActionPreference = "Stop"
+$Checkpoints = @(
+    $Checkpoints |
+        ForEach-Object { $_ -split ',' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+$Root = Split-Path -Parent $PSScriptRoot
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
+$Agents = Join-Path $Root "outputs\checkpoint_selection\agents"
+$EvalOpponents = Join-Path $Root "outputs\checkpoint_selection\eval_opponents"
+$PhaseRoot = Join-Path $Root "outputs\checkpoint_selection\$Phase"
+
+if (-not $SkipPackaging) {
+    & $Python (Join-Path $PSScriptRoot "prepare_checkpoint_agents.py")
+    if ($LASTEXITCODE -ne 0) { throw "Checkpoint packaging failed." }
+}
+
+& $Python (Join-Path $PSScriptRoot "prepare_checkpoint_eval_runtime.py") `
+    --candidate-root $Agents `
+    --opponent-root $EvalOpponents `
+    --best-agent (Join-Path $Root "outputs\submission_packages\best_agent") `
+    --first-agent (Join-Path $Root "internal_testing\hall_of_fame\11-24_12-56-23_062179520_must_research") `
+    --stage350-agent (Join-Path $Root "outputs\auto_league_dagger_v4_16x16\learner_agent") `
+    --stage400-agent (Join-Path $Root "outputs\auto_league_dagger_v7_16x16\best_agent")
+if ($LASTEXITCODE -ne 0) { throw "Evaluation runtime preparation failed." }
+
+$MapSizes = if ($Phase -eq "phase1") { @(12, 24) } else { @(12, 16, 24, 32) }
+$Opponents = if ($Phase -in @("phase1", "rescue", "distill", "repro")) { @("best_agent") } else { @("best_agent", "first", "stage350", "stage400") }
+
+foreach ($checkpoint in $Checkpoints) {
+    $agent = Join-Path $Agents $checkpoint
+    if (-not (Test-Path -LiteralPath (Join-Path $agent "main.py"))) {
+        throw "Checkpoint agent is missing: $agent"
+    }
+    $output = Join-Path $PhaseRoot $checkpoint
+    & (Join-Path $PSScriptRoot "generate_deployed_agent_replays.ps1") `
+        -CurrentAgent $agent `
+        -BestAgent (Join-Path $EvalOpponents "best_agent") `
+        -FirstAgent (Join-Path $EvalOpponents "first") `
+        -Stage350Agent (Join-Path $EvalOpponents "stage350") `
+        -Stage400Agent (Join-Path $EvalOpponents "stage400") `
+        -Seeds $Seeds `
+        -MapSizes $MapSizes `
+        -OpponentNames $Opponents `
+        -Sides 0,1 `
+        -OutputDir $output `
+        -AgentTurnTimeoutMs $AgentTurnTimeoutMs `
+        -TimeoutSeconds $TimeoutSeconds `
+        -ContinueOnFailure
+    $manifestPath = Join-Path $output "manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        Write-Warning "Replay generation did not produce a manifest for $checkpoint"
+        continue
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $failureCount = @($manifest.failures).Count
+    if ($failureCount -gt 0) {
+        Write-Warning "Replay generation recorded $failureCount failure(s) for $checkpoint"
+    }
+}
+
+& $Python (Join-Path $PSScriptRoot "summarize_checkpoint_selection.py") `
+    --root $PhaseRoot `
+    --output-dir $PhaseRoot
+if ($LASTEXITCODE -ne 0) { throw "Checkpoint summary failed." }

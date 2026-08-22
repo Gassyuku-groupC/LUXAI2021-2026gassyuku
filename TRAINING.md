@@ -106,6 +106,82 @@ PFSP pool sampling can be inspected with:
 
 Continue low-learning-rate APPO only if KL remains controlled and paired evaluation does not regress expansion tempo, side balance, worst-night city loss, or win rate.
 
+## 8. Role Adapter Evaluation And Joint Training
+
+Generate the role-enabled package with `prepare_checkpoint_agents.py
+--enable-role-adapter`, then compare it with `best_agent` on fixed seeds, both
+sides, and all four maps. Treat 32x32 engine timeouts as failed evaluations, not
+losses or valid samples. Review per-map results instead of relying only on the
+aggregate ranking.
+
+After fresh-seed replication, training may progress from adapter-only updates to
+Role Adapter plus Sidecar, and finally to low-learning-rate joint Actor,
+Sidecar, and Role Adapter optimization. Keep the frozen `best_agent` KL teacher
+through every stage and use separate optimizer parameter groups. The learner
+must explicitly save and restore adapter parameters and optimizer state before
+learned-role training begins. See [ROLE.md](ROLE.md) for the interface and
+initial learning-rate ranges.
+
+### 70560 Rescue Stage
+
+The first checkpoint screen promoted 70560 but exposed small-map and player-1
+regressions. Run the bounded rescue stage from its weights with a fresh optimizer:
+
+```powershell
+$out = "D:\Luxai\Kaggle_Lux_AI_2021\outputs\sidecar_appo_rescue_70560"
+New-Item -ItemType Directory -Path $out -Force | Out-Null
+Push-Location $out
+& ..\..\.venv\Scripts\python.exe ..\..\run_monobeast.py `
+  --config-name conv_sidecar_appo_rescue_70560 2>&1 |
+  Tee-Object .\train.log
+Pop-Location
+```
+
+This stage runs 100 games at `1e-6`, raises the fixed-best reference KL cost to
+`0.01`, retains a `0.05` teacher-BC floor, and samples 12x12/16x16 in four of
+six map slots. Evaluate its final weights immediately on paired 12x12/24x24
+games. Stop APPO if neither small-map nor player-1 performance improves.
+
+## Checkpoint Selection
+
+Build executable packages for the BC starting point and every checkpoint from the
+200-game smoke run:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\prepare_checkpoint_agents.py
+```
+
+Run phase 1 against `best_agent` on 12x12 and 24x24 maps from both sides:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_checkpoint_selection.ps1 `
+  -Phase phase1 `
+  -Seeds 20260824 `
+  -AgentTurnTimeoutMs 30000 `
+  -TimeoutSeconds 1200 `
+  -SkipPackaging
+```
+
+The controller reuses valid replays, so it can be stopped and resumed. After
+phase 1, pass only the promoted checkpoint labels to phase 2:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run_checkpoint_selection.ps1 `
+  -Phase phase2 `
+  -Checkpoints 30272,50112,70560 `
+  -Seeds 20260824 `
+  -AgentTurnTimeoutMs 30000 `
+  -TimeoutSeconds 1800 `
+  -SkipPackaging
+```
+
+Phase 2 evaluates all four map sizes against `best_agent`, first, stage350, and
+stage400. Results are written to `ranking.csv`, `games.csv`, and `summary.json`.
+Ranking is ordered by win rate, timeout rate, city margin, unit margin, and
+worst-night city loss. Training loss is not a promotion criterion.
+
 ## Progressive Backbone Migration
 
 The retained 8, 16, and 24-block configs define the progressive depth route. Use:

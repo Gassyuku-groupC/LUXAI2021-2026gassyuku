@@ -39,6 +39,8 @@ Key properties:
 - APPO uses PPO clipping for policy optimization and V-trace/TD-lambda targets for asynchronous correction and critic learning.
 
 See [METHODOLOGY.md](METHODOLOGY.md) for design details and [TRAINING.md](TRAINING.md) for reproducible commands.
+See [ROLE.md](ROLE.md) for the optional role and city adapter, its Lux action
+constraints, initial A/B evidence, and staged learning path.
 
 ## Repository Layout
 
@@ -54,6 +56,8 @@ lux_ai/rl_agent/
   learned_intervention_gate.py
   sidecar_agent_wrapper.py
   gate_policy.py
+  role_assignment.py
+  role_city_adapter.py
 
 lux_ai/torchbeast/
   monobeast.py

@@ -11,6 +11,7 @@ param(
     [string[]]$OpponentNames = @("best_agent", "first", "stage350", "stage400"),
     [int[]]$Sides = @(0, 1),
     [string]$OutputDir = "outputs\spatial_risk_deployed_replays",
+    [int]$AgentTurnTimeoutMs = 30000,
     [int]$TimeoutSeconds = 420,
     [int]$HeartbeatSeconds = 60,
     [switch]$ContinueOnFailure
@@ -21,8 +22,13 @@ $LuxRoot = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $LuxRoot ".venv\Scripts\python.exe"
 $PythonDir = Split-Path -Parent $Python
 if (-not $NodeExe) {
-    $nodeCommand = Get-Command node.exe -ErrorAction Stop
-    $NodeExe = $nodeCommand.Source
+    $bundledNode = Join-Path $LuxRoot ".tools\node16\node_modules\node\bin\node.exe"
+    if (Test-Path -LiteralPath $bundledNode) {
+        $NodeExe = $bundledNode
+    } else {
+        $nodeCommand = Get-Command node.exe -ErrorAction Stop
+        $NodeExe = $nodeCommand.Source
+    }
 }
 $Node = (Resolve-Path -LiteralPath $NodeExe).Path
 $NodeRoot = Split-Path -Parent $Node
@@ -130,6 +136,16 @@ function Test-JsonReplay([string]$Path) {
     }
 }
 
+function Test-AgentTimeout([string]$StdoutPath, [string]$StderrPath) {
+    foreach ($path in @($StdoutPath, $StderrPath)) {
+        if ((Test-Path -LiteralPath $path) -and
+            (Select-String -LiteralPath $path -Pattern "timed out after" -Quiet)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Invoke-Match(
     [string]$Player0,
     [string]$Player1,
@@ -143,8 +159,8 @@ function Invoke-Match(
     $stderr = Join-Path $LogDir "$Name.stderr.log"
     $arguments = @(
         "`"$LuxCli`"", "`"$Player0`"", "`"$Player1`"", "--python", "`"$Python`"",
-        "--seed", $Seed, "--loglevel", "0", "--memory", "8000",
-        "--maxtime", "60000", "--width", $MapSize, "--height", $MapSize,
+        "--seed", $Seed, "--loglevel", "1", "--memory", "8000",
+        "--maxtime", $AgentTurnTimeoutMs, "--width", $MapSize, "--height", $MapSize,
         "--storeLogs=true", "--statefulReplay=false", "--out", "`"$commandReplay`""
     )
     if (-not (Test-JsonReplay $commandReplay)) {
@@ -156,6 +172,10 @@ function Invoke-Match(
         $nextHeartbeat = $started.AddSeconds($HeartbeatSeconds)
         while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Seconds 2
+            if (Test-AgentTimeout $stdout $stderr) {
+                Stop-MatchProcesses $process.Id
+                throw "Agent turn timeout was reported by the Lux engine: $Name"
+            }
             if (Test-JsonReplay $commandReplay) { break }
             if ($HeartbeatSeconds -gt 0 -and [DateTime]::UtcNow -ge $nextHeartbeat) {
                 $elapsed = [int]([DateTime]::UtcNow - $started).TotalSeconds
@@ -174,6 +194,9 @@ function Invoke-Match(
         }
     } else {
         Write-Host "Reusing completed command replay $Name"
+    }
+    if (Test-AgentTimeout $stdout $stderr) {
+        throw "Agent turn timeout was reported by the Lux engine: $Name"
     }
     if (Test-JsonReplay $statefulReplay) {
         return [pscustomobject]@{

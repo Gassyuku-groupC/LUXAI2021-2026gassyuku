@@ -87,3 +87,11 @@ A successful training run is not automatically a promoted agent. Promotion requi
 - timeout or invalid replay count.
 
 The 200-game smoke run validates finite optimization and checkpoint updates only. It does not yet establish parity with or superiority over `best_agent`.
+
+## Optional Role Adapter
+
+The role and city adapter is an external, independently switchable policy
+post-processor. It preserves the legacy Actor checkpoint and applies only
+legal-action logit biases. The default configuration is disabled, which keeps
+the reproduced `best_agent` path unchanged. See [ROLE.md](ROLE.md) for role
+semantics, transfer constraints, learning stages, and current A/B evidence.
