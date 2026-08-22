@@ -32,6 +32,12 @@ def main() -> None:
     parser.add_argument("--first-agent", type=Path, required=True)
     parser.add_argument("--stage350-agent", type=Path, required=True)
     parser.add_argument("--stage400-agent", type=Path, required=True)
+    parser.add_argument(
+        "--opponent-names",
+        nargs="+",
+        choices=("best_agent", "first", "stage350", "stage400"),
+        default=("best_agent", "first", "stage350", "stage400"),
+    )
     args = parser.parse_args()
 
     for candidate in args.candidate_root.iterdir():
@@ -45,7 +51,8 @@ def main() -> None:
         "stage350": args.stage350_agent,
         "stage400": args.stage400_agent,
     }
-    for name, source in sources.items():
+    for name in args.opponent_names:
+        source = sources[name]
         if not (source / "main.py").exists():
             raise FileNotFoundError(f"Agent package not found: {source}")
         destination = args.opponent_root / name

@@ -21,6 +21,8 @@ $Python = Join-Path $Root ".venv\Scripts\python.exe"
 $Agents = Join-Path $Root "outputs\checkpoint_selection\agents"
 $EvalOpponents = Join-Path $Root "outputs\checkpoint_selection\eval_opponents"
 $PhaseRoot = Join-Path $Root "outputs\checkpoint_selection\$Phase"
+$MapSizes = if ($Phase -eq "phase1") { @(12, 24) } else { @(12, 16, 24, 32) }
+$Opponents = if ($Phase -in @("phase1", "rescue", "distill", "repro")) { @("best_agent") } else { @("best_agent", "first", "stage350", "stage400") }
 
 if (-not $SkipPackaging) {
     & $Python (Join-Path $PSScriptRoot "prepare_checkpoint_agents.py")
@@ -33,11 +35,9 @@ if (-not $SkipPackaging) {
     --best-agent (Join-Path $Root "outputs\submission_packages\best_agent") `
     --first-agent (Join-Path $Root "internal_testing\hall_of_fame\11-24_12-56-23_062179520_must_research") `
     --stage350-agent (Join-Path $Root "outputs\auto_league_dagger_v4_16x16\learner_agent") `
-    --stage400-agent (Join-Path $Root "outputs\auto_league_dagger_v7_16x16\best_agent")
+    --stage400-agent (Join-Path $Root "outputs\auto_league_dagger_v7_16x16\best_agent") `
+    --opponent-names $Opponents
 if ($LASTEXITCODE -ne 0) { throw "Evaluation runtime preparation failed." }
-
-$MapSizes = if ($Phase -eq "phase1") { @(12, 24) } else { @(12, 16, 24, 32) }
-$Opponents = if ($Phase -in @("phase1", "rescue", "distill", "repro")) { @("best_agent") } else { @("best_agent", "first", "stage350", "stage400") }
 
 foreach ($checkpoint in $Checkpoints) {
     $agent = Join-Path $Agents $checkpoint
