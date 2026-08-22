@@ -14,6 +14,7 @@ param(
     [int]$AgentTurnTimeoutMs = 30000,
     [int]$TimeoutSeconds = 420,
     [int]$HeartbeatSeconds = 60,
+    [switch]$DisableRoleTrace,
     [switch]$ContinueOnFailure
 )
 
@@ -51,7 +52,8 @@ if (-not [IO.Path]::IsPathRooted($OutputDir)) {
 }
 $ReplayDir = Join-Path $OutputDir "replays"
 $LogDir = Join-Path $OutputDir "logs"
-New-Item -ItemType Directory -Path $ReplayDir, $LogDir -Force | Out-Null
+$RoleDir = Join-Path $OutputDir "roles"
+New-Item -ItemType Directory -Path $ReplayDir, $LogDir, $RoleDir -Force | Out-Null
 
 $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "Process")
 [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
@@ -157,6 +159,7 @@ function Invoke-Match(
     $statefulReplay = Join-Path $ReplayDir "$Name.json"
     $stdout = Join-Path $LogDir "$Name.stdout.log"
     $stderr = Join-Path $LogDir "$Name.stderr.log"
+    $traceBase = Join-Path $RoleDir $Name
     $arguments = @(
         "`"$LuxCli`"", "`"$Player0`"", "`"$Player1`"", "--python", "`"$Python`"",
         "--seed", $Seed, "--loglevel", "1", "--memory", "8000",
@@ -165,8 +168,13 @@ function Invoke-Match(
     )
     if (-not (Test-JsonReplay $commandReplay)) {
         Write-Host "Running $Name"
+        if (-not $DisableRoleTrace) {
+            Remove-Item -LiteralPath "$traceBase.p0.jsonl", "$traceBase.p1.jsonl" -Force -ErrorAction SilentlyContinue
+            [Environment]::SetEnvironmentVariable("LUX_ROLE_TRACE_PATH", $traceBase, "Process")
+        }
         $process = Start-Process -FilePath $Node -ArgumentList $arguments -PassThru -WindowStyle Hidden `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        [Environment]::SetEnvironmentVariable("LUX_ROLE_TRACE_PATH", $null, "Process")
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         $started = [DateTime]::UtcNow
         $nextHeartbeat = $started.AddSeconds($HeartbeatSeconds)
@@ -237,7 +245,20 @@ foreach ($mapSize in $MapSizes) {
                 $p0 = if ($side -eq 0) { Join-Path $CurrentAgent "main.py" } else { Join-Path $opponent.Path "main.py" }
                 $p1 = if ($side -eq 0) { Join-Path $opponent.Path "main.py" } else { Join-Path $CurrentAgent "main.py" }
                 try {
-                    $completed += Invoke-Match $p0 $p1 $seed $mapSize $name
+                    $result = Invoke-Match $p0 $p1 $seed $mapSize $name
+                    if (-not $DisableRoleTrace) {
+                        $trace = Join-Path $RoleDir "$name.p$side.jsonl"
+                        $roleSidecar = Join-Path $ReplayDir "$name.roles.json"
+                        if (Test-Path -LiteralPath $trace) {
+                            & $Python (Join-Path $PSScriptRoot "finalize_role_trace.py") `
+                                --trace $trace --replay $result.replay --output $roleSidecar
+                            if ($LASTEXITCODE -ne 0) { throw "Role trace finalization failed: $name" }
+                            $result | Add-Member -NotePropertyName role_sidecar -NotePropertyValue $roleSidecar
+                        } else {
+                            Write-Warning "Role trace was not produced: $name"
+                        }
+                    }
+                    $completed += $result
                 } catch {
                     $failures += [pscustomobject]@{ name = $name; error = $_.Exception.Message }
                     Write-Warning $_.Exception.Message

@@ -78,15 +78,22 @@ class RoleCityAdapterTests(unittest.TestCase):
         config = RoleAssignmentConfig(
             enabled=True,
             bias_enabled=True,
-            bias_disabled_map_sizes=(12, 24, 32),
+            bias_disabled_map_sizes=(),
             bias_disabled_players_by_map={},
+            bias_scale_by_map_size={12: 0.35, 16: 1.0, 24: 0.35, 32: 0.25},
+            max_biased_workers_by_map_size={12: 32, 16: 64, 24: 64, 32: 64},
+            safety_only_map_sizes=(12, 24, 32),
         )
 
-        self.assertFalse(config.bias_active_for(12, 0))
+        self.assertTrue(config.bias_active_for(12, 0))
         self.assertTrue(config.bias_active_for(16, 0))
-        self.assertFalse(config.bias_active_for(24, 0))
-        self.assertFalse(config.bias_active_for(24, 1))
-        self.assertFalse(config.bias_active_for(32, 1))
+        self.assertTrue(config.bias_active_for(24, 0))
+        self.assertTrue(config.bias_active_for(24, 1))
+        self.assertTrue(config.bias_active_for(32, 1))
+        self.assertEqual(config.bias_scale_for(24), 0.35)
+        self.assertEqual(config.max_biased_workers_for(32), 64)
+        self.assertTrue(config.safety_only_for(24))
+        self.assertFalse(config.safety_only_for(16))
 
     def test_learnable_bias_receives_gradient(self):
         game = self.make_game(turn=10)
@@ -149,6 +156,34 @@ class RoleCityAdapterTests(unittest.TestCase):
 
         illegal = ~worker_mask
         self.assertTrue(torch.isneginf(output["worker"][illegal]).all())
+
+    def test_safety_only_map_does_not_bias_harvester(self):
+        game = self.make_game(turn=10)
+        player, opponent = Player(0), Player(1)
+        worker = self.add_worker(player, "u0", 1, 1)
+        game.map._setResource("wood", 1, 1, 500)
+        adapter = RoleCityAdapter.from_config(
+            RoleAssignmentConfig(
+                enabled=True,
+                bias_enabled=True,
+                safety_only_map_sizes=(12,),
+            )
+        )
+        adapter.update(game_state=game, player=player, opponent=opponent)
+        logits, masks = self.make_policy()
+
+        output = adapter.apply(
+            game_state=game,
+            player=player,
+            opponent=opponent,
+            actionable_workers={pos_to_loc(worker.pos.astuple()): [worker]},
+            actionable_city_tiles={},
+            policy_logits=logits,
+            available_actions_mask=masks,
+            player_id=0,
+        )
+
+        self.assertEqual(torch.count_nonzero(output["worker"]).item(), 0)
 
     def test_firefighter_transfer_only_biases_adjacent_relay_toward_city(self):
         game = self.make_game(turn=20)

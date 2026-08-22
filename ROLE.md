@@ -90,7 +90,38 @@ the reproduced best Actor plus zero-delta Sidecar as its student start, fixes
 up-weights turns 25-39 on 16x16 and 24x24. Learned values can be exported to the
 runtime adapter YAML with `scripts/export_role_bias_checkpoint.py`.
 
-## Initial A/B Evidence
+## Bounded Multi-Map Runtime
+
+Role assignment runs on all four map sizes. The deployment package uses full
+learned role and city biases on 16x16. On 12x12, 24x24, and 32x32 it uses a
+safety-only mode: Firefighter movement, adjacent-unit relay transfer, and the
+Firefighter BUILD_CITY penalty remain active, while expansion, attacker, and
+city-specialization biases are observe-only. Per-map bias scales and worker
+budgets bound both strategy drift and runtime cost.
+
+This replaces the earlier whole-map disable switch. The previously timing-out
+24x24 seeds `314159265/p0` and `86753091/p1` completed under the 300-second
+evaluation cap in safety-only mode. A 32x32 smoke with seed `20260826` also
+completed under the same cap.
+
+## Replay Overlay
+
+Local replay generation writes the candidate player's actual cooldown-adjusted
+assignments to a matching `*.roles.json` file. Each frame includes unit and city
+roles, desired role, cooldown, assignment-change flag, reason, tile positions,
+and whether the learned bias was active.
+
+Open `tools/role_replay_viewer/index.html`, then select the converted stateful
+replay and matching role sidecar. The offline viewer provides role colors,
+unit/city and team filters, hover details, playback speed, and turn controls.
+Pass `-DisableRoleTrace` to `generate_deployed_agent_replays.ps1` when role
+sidecars are not needed.
+
+## Historical A/B Evidence
+
+The following early result used a package that did not preserve the base
+agent's `Rot180` runtime augmentation. It is retained only as historical
+evidence that the adapter executed; it must not be used for promotion.
 
 The first paired fixed-seed evaluation against `best_agent` completed six games
 on 12x12, 16x16, and 24x24. Both 32x32 games hit the existing 900-second Lux

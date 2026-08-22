@@ -88,6 +88,9 @@ class RoleAssignmentConfig:
     annotate_summary: bool = False
     bias_disabled_map_sizes: Sequence[int] = field(default_factory=tuple)
     bias_disabled_players_by_map: Mapping[int, Sequence[int]] = field(default_factory=dict)
+    bias_scale_by_map_size: Mapping[int, float] = field(default_factory=dict)
+    max_biased_workers_by_map_size: Mapping[int, int] = field(default_factory=dict)
+    safety_only_map_sizes: Sequence[int] = field(default_factory=tuple)
     bias_params: RoleCityBiasParams = field(default_factory=RoleCityBiasParams)
 
     @classmethod
@@ -132,6 +135,21 @@ class RoleAssignmentConfig:
         if disabled_players is None:
             disabled_players = self.bias_disabled_players_by_map.get(str(map_size), ())
         return player_id not in {int(value) for value in disabled_players}
+
+    def bias_scale_for(self, map_size: int) -> float:
+        value = self.bias_scale_by_map_size.get(map_size)
+        if value is None:
+            value = self.bias_scale_by_map_size.get(str(map_size), 1.0)
+        return max(float(value), 0.0)
+
+    def max_biased_workers_for(self, map_size: int) -> int:
+        value = self.max_biased_workers_by_map_size.get(map_size)
+        if value is None:
+            value = self.max_biased_workers_by_map_size.get(str(map_size), 10**9)
+        return max(int(value), 0)
+
+    def safety_only_for(self, map_size: int) -> bool:
+        return map_size in {int(size) for size in self.safety_only_map_sizes}
 
 
 @dataclass(frozen=True)

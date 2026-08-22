@@ -1,4 +1,5 @@
 import numpy as np
+import json
 import os
 from pathlib import Path
 
@@ -68,6 +69,12 @@ class RLAgent:
             base_dir=RL_AGENT_CONFIG_PATH.parent,
         )
         self.role_city_adapter = RoleCityAdapter.from_config(self.role_assignment_config)
+        role_trace_base = os.environ.get("LUX_ROLE_TRACE_PATH")
+        self.role_trace_handle = None
+        if role_trace_base:
+            trace_path = Path(f"{role_trace_base}.p{int(obs.player)}.jsonl")
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            self.role_trace_handle = trace_path.open("w", encoding="utf-8", buffering=1)
         torch_num_threads = int(getattr(self.agent_flags, "runtime_torch_num_threads", 1))
         if torch_num_threads > 0:
             torch.set_num_threads(torch_num_threads)
@@ -317,7 +324,7 @@ class RLAgent:
         role_active = self.role_assignment_config.bias_active_for(
             int(self.game_state.map_width), int(obs.player)
         )
-        if role_active:
+        if role_active or self.role_trace_handle is not None:
             role_snapshot = self.role_city_adapter.update(
                 game_state=self.game_state,
                 player=self.me,
@@ -326,6 +333,7 @@ class RLAgent:
         else:
             self.role_city_adapter.deactivate()
             role_snapshot = None
+        self.write_role_trace(role_snapshot, role_active, int(obs.player))
         if role_snapshot is not None and self.role_assignment_config.dry_run_logging:
             DEBUG_MESSAGE(role_snapshot.summary(
                 max_units=self.role_assignment_config.max_log_units,
@@ -393,6 +401,52 @@ class RLAgent:
         actions.append(annotate.sidetext(value_msg))
         DEBUG_MESSAGE(" - ".join([value_msg, timing_msg, overage_time_msg]))
         return actions
+
+    def write_role_trace(self, snapshot, bias_active: bool, player_id: int) -> None:
+        if self.role_trace_handle is None or snapshot is None:
+            return
+        units_by_id = {unit.id: unit for unit in self.me.units}
+        unit_records = []
+        for unit_id, assignment in snapshot.unit_roles.items():
+            unit = units_by_id.get(unit_id)
+            if unit is None:
+                continue
+            unit_records.append({
+                "id": unit_id,
+                "x": int(unit.pos.x),
+                "y": int(unit.pos.y),
+                "role": assignment.role,
+                "desired_role": assignment.desired_role,
+                "changed": bool(assignment.changed),
+                "cooldown": int(assignment.cooldown_remaining),
+                "reason": assignment.reason,
+            })
+        city_records = []
+        for city_id, specialization in snapshot.city_roles.items():
+            city = self.me.cities.get(city_id)
+            if city is None:
+                continue
+            city_records.append({
+                "id": city_id,
+                "role": specialization.role,
+                "reason": specialization.reason,
+                "nights_of_fuel": float(specialization.nights_of_fuel),
+                "abandon": bool(specialization.abandon),
+                "tiles": [
+                    {"x": int(tile.pos.x), "y": int(tile.pos.y)}
+                    for tile in city.citytiles
+                ],
+            })
+        record = {
+            "turn": int(self.game_state.turn),
+            "player": player_id,
+            "map_size": int(self.game_state.map_width),
+            "bias_active": bool(bias_active),
+            "bias_scale": float(self.role_assignment_config.bias_scale_for(self.game_state.map_width)),
+            "units": unit_records,
+            "cities": city_records,
+        }
+        self.role_trace_handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
     def preprocess(self, obs, conf) -> NoReturn:
         # Do not call manual_step on the first turn, or you will be off-by-1 turn the entire game

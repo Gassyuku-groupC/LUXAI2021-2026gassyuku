@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lux Role Replay Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Lux Role Replay</h1>
+      <p id="status">Load a stateful replay and its role sidecar.</p>
+    </div>
+    <div class="file-controls">
+      <label class="file-button">Replay<input id="replay-file" type="file" accept=".json"></label>
+      <label class="file-button">Roles<input id="roles-file" type="file" accept=".json"></label>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage" aria-label="Replay board">
+      <canvas id="board" width="960" height="960"></canvas>
+      <div id="hover-detail" class="hover-detail" hidden></div>
+    </section>
+
+    <aside>
+      <section class="controls" aria-label="Playback controls">
+        <div class="transport">
+          <button id="previous" title="Previous turn" aria-label="Previous turn">&#9664;</button>
+          <button id="play" title="Play or pause" aria-label="Play or pause">&#9654;</button>
+          <button id="next" title="Next turn" aria-label="Next turn">&#9654;&#124;</button>
+          <span id="turn-label">Turn 0 / 0</span>
+        </div>
+        <input id="turn" type="range" min="0" max="0" value="0" aria-label="Replay turn">
+        <label>Speed
+          <select id="speed">
+            <option value="800">0.5x</option>
+            <option value="400" selected>1x</option>
+            <option value="200">2x</option>
+            <option value="100">4x</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="filters" aria-label="Overlay filters">
+        <h2>Overlay</h2>
+        <label><input id="show-units" type="checkbox" checked> Unit roles</label>
+        <label><input id="show-cities" type="checkbox" checked> City roles</label>
+        <label><input id="show-team-0" type="checkbox" checked> Team 0</label>
+        <label><input id="show-team-1" type="checkbox" checked> Team 1</label>
+      </section>
+
+      <section>
+        <h2>Role Legend</h2>
+        <div id="legend" class="legend"></div>
+      </section>
+
+      <section>
+        <h2>Selection</h2>
+        <dl id="selection"><dt>Cell</dt><dd>Hover over the board</dd></dl>
+      </section>
+    </aside>
+  </main>
+
+  <script src="app.js?v=2"></script>
+</body>
+</html>

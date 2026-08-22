@@ -132,8 +132,11 @@ def build_agent(
             "annotate_summary": False,
             "cooldown_turns": 5,
             "firefighter_override_cooldown": True,
-            "bias_disabled_map_sizes": [12, 24, 32],
+            "bias_disabled_map_sizes": [],
             "bias_disabled_players_by_map": {},
+            "bias_scale_by_map_size": {12: 0.35, 16: 1.0, 24: 0.35, 32: 0.25},
+            "max_biased_workers_by_map_size": {12: 32, 16: 64, 24: 64, 32: 64},
+            "safety_only_map_sizes": [12, 24, 32],
         })
         agent_config_path.write_text(
             yaml.safe_dump(agent_config, sort_keys=False), encoding="utf-8"

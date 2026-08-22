@@ -53,6 +53,7 @@ class RoleCityAdapter(nn.Module):
         self._enemy_worker_positions = []
         self._city_centers_by_role = {}
         self._critical_city_centers = []
+        self._runtime_bias_scale = 1.0
         self.learnable_biases = learnable_biases
         if learnable_biases:
             self.bias_params = nn.ParameterDict({
@@ -143,12 +144,22 @@ class RoleCityAdapter(nn.Module):
         worker_mask = available_actions_mask["worker"]
         city_mask = available_actions_mask["city_tile"]
 
+        self._runtime_bias_scale = self.config.bias_scale_for(game_state.map_width)
+        role_priority = {FIREFIGHTER: 0, BUILDER: 1, ATTACKER: 2, HARVESTER: 3}
+        actionable = []
         for workers in actionable_workers.values():
             if not workers:
                 continue
             worker = workers[0]
             assignment = self.snapshot.unit_roles.get(worker.id)
-            if assignment is None:
+            if assignment is not None:
+                actionable.append((role_priority.get(assignment.role, 9), worker.id, worker, assignment))
+        actionable.sort(key=lambda item: (item[0], item[1]))
+        worker_budget = self.config.max_biased_workers_for(game_state.map_width)
+        safety_only = self.config.safety_only_for(game_state.map_width)
+
+        for _, _, worker, assignment in actionable[:worker_budget]:
+            if safety_only and assignment.role != FIREFIGHTER:
                 continue
             x, y = worker.pos.astuple()
             if assignment.role == HARVESTER:
@@ -191,7 +202,7 @@ class RoleCityAdapter(nn.Module):
                 self._bias_worker_action(worker_logits, worker_mask, player_id, x, y, "BUILD_CITY",
                                          "firefighter_build_city_penalty", sign=-1.0)
 
-        for pos, city_role in city_tile_roles(player, self.snapshot).items():
+        for pos, city_role in (() if safety_only else city_tile_roles(player, self.snapshot).items()):
             x, y = pos
             if pos_to_loc(pos) not in actionable_city_tiles:
                 continue
@@ -242,11 +253,13 @@ class RoleCityAdapter(nn.Module):
         if self.bias_params is None:
             logits[0, 0, player_id, x, y, idx] += (
                 float(getattr(self.config.bias_params, param_name)) * sign
+                * self._runtime_bias_scale
             )
         elif mask[0, 0, player_id, x, y, idx]:
             logits[0, 0, player_id, x, y, idx] = (
                 logits[0, 0, player_id, x, y, idx] +
                 self.bias_value(param_name, logits) * sign
+                * self._runtime_bias_scale
             )
 
     def _bias_city_action(
@@ -263,11 +276,12 @@ class RoleCityAdapter(nn.Module):
         if self.bias_params is None:
             logits[0, 0, player_id, x, y, idx] += float(
                 getattr(self.config.bias_params, param_name)
-            )
+            ) * self._runtime_bias_scale
         elif mask[0, 0, player_id, x, y, idx]:
             logits[0, 0, player_id, x, y, idx] = (
                 logits[0, 0, player_id, x, y, idx] +
                 self.bias_value(param_name, logits)
+                * self._runtime_bias_scale
             )
 
     def _bias_firefighter_transfers(
@@ -303,11 +317,12 @@ class RoleCityAdapter(nn.Module):
                 if self.bias_params is None:
                     logits[0, 0, player_id, x, y, idx] += float(
                         self.config.bias_params.firefighter_transfer_bias
-                    )
+                    ) * self._runtime_bias_scale
                 elif mask[0, 0, player_id, x, y, idx]:
                     logits[0, 0, player_id, x, y, idx] = (
                         logits[0, 0, player_id, x, y, idx] +
                         self.bias_value("firefighter_transfer_bias", logits)
+                        * self._runtime_bias_scale
                     )
 
     @staticmethod
